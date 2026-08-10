@@ -13,6 +13,10 @@ Creates the FastMCP application and registers all geo tools:
     clip_raster           — gdalwarp -cutline to GeoJSON geometry
     build_overviews       — gdaladdo on a copy (source never mutated)
 
+  Geocoding tools (read-only, synchronous):
+    reverse_geocode       — label a single WGS84 point through Nominatim
+    reverse_geocode_bbox  — label a bbox or CKAN dataset extent through Nominatim
+
   Status tool (shared):
     get_execution_status  — poll Tapis Abaco execution; parse actor logs
 
@@ -39,7 +43,7 @@ import sys
 import fastmcp
 
 from .config import settings
-from .tools import metadata, status, transform
+from .tools import geocode, metadata, status, transform
 
 # Configure logging to stderr so tool results (stdout) are clean.
 logging.basicConfig(
@@ -58,18 +62,22 @@ mcp = fastmcp.FastMCP(
     "DSO Geo MCP Server",
     instructions=(
         "You are connected to the DSO geospatial processing service. "
-        "Use the available tools to extract metadata from rasters and run "
+        "Use the available tools to reverse-geocode coordinates, extract "
+        "metadata from rasters, and run "
         "GDAL transformations on datasets stored on TACC Corral, dispatched "
         "to Tapis Abaco compute actors — no local download required. "
         "\n\n"
         "Typical workflow:\n"
         "1. Use dso-ckan tools to find a dataset and its resource IDs.\n"
-        "2. Call a geo tool (e.g. gdalinfo_extract, reproject_raster) with the "
+        "2. For place labels, call reverse_geocode or reverse_geocode_bbox; "
+        "   these return synchronously and do not need a token or polling.\n"
+        "3. For raster metadata/transforms, call a geo tool (e.g. "
+        "   gdalinfo_extract, reproject_raster) with the "
         "   resource_id and a Tapis JWT as tapis_token.\n"
-        "3. The tool returns an execution_id immediately.\n"
-        "4. Poll get_execution_status(execution_id) until status is COMPLETE "
+        "4. Actor-backed tools return an execution_id immediately.\n"
+        "5. Poll get_execution_status(execution_id) until status is COMPLETE "
         "   or FAILED.\n"
-        "5. When COMPLETE, the result contains metadata or provenance, and "
+        "6. When COMPLETE, the result contains metadata or provenance, and "
         "   transform outputs are automatically registered as new CKAN resources.\n"
         "\n"
         "Token requirement:\n"
@@ -88,6 +96,7 @@ mcp = fastmcp.FastMCP(
 # ------------------------------------------------------------------
 
 metadata.register(mcp)
+geocode.register(mcp)
 transform.register(mcp)
 status.register(mcp)
 

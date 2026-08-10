@@ -22,6 +22,7 @@ portal.
 from __future__ import annotations
 
 import ipaddress
+import json
 import logging
 from typing import Any
 from urllib.parse import urlparse
@@ -88,6 +89,96 @@ def _ckan_api_get(action: str, params: dict[str, str], ckan_url: str) -> dict[st
         raise CKANResolveError(f"CKAN {action} returned success=false: {error}")
 
     return data.get("result", {})
+
+
+def _validate_bbox_values(values: list[Any]) -> list[float]:
+    if len(values) != 4:
+        raise ValueError("bbox must have four values")
+    try:
+        west, south, east, north = [float(v) for v in values]
+    except (TypeError, ValueError) as exc:
+        raise ValueError("bbox values must be numeric") from exc
+    if west > east or south > north:
+        raise ValueError("bbox values must be ordered [west, south, east, north]")
+    if not (-180 <= west <= 180 and -180 <= east <= 180 and -90 <= south <= 90 and -90 <= north <= 90):
+        raise ValueError("bbox values are outside WGS84 bounds")
+    return [west, south, east, north]
+
+
+def _iter_positions(coords: Any):
+    if not isinstance(coords, (list, tuple)):
+        return
+    if len(coords) >= 2 and not isinstance(coords[0], (list, tuple)) and not isinstance(coords[1], (list, tuple)):
+        try:
+            lon = float(coords[0])
+            lat = float(coords[1])
+        except (TypeError, ValueError):
+            return
+        yield lon, lat
+        return
+    for item in coords:
+        yield from _iter_positions(item)
+
+
+def _bbox_from_positions(positions: list[tuple[float, float]]) -> list[float]:
+    if not positions:
+        raise ValueError("GeoJSON contains no coordinate positions")
+    lons = [p[0] for p in positions]
+    lats = [p[1] for p in positions]
+    return _validate_bbox_values([min(lons), min(lats), max(lons), max(lats)])
+
+
+def _merge_bboxes(boxes: list[list[float]]) -> list[float]:
+    if not boxes:
+        raise ValueError("GeoJSON contains no geometry")
+    return _validate_bbox_values([
+        min(b[0] for b in boxes),
+        min(b[1] for b in boxes),
+        max(b[2] for b in boxes),
+        max(b[3] for b in boxes),
+    ])
+
+
+def _bbox_from_geojson_obj(obj: Any) -> list[float]:
+    if isinstance(obj, str):
+        try:
+            obj = json.loads(obj)
+        except json.JSONDecodeError as exc:
+            raise ValueError("spatial field is not valid JSON") from exc
+    if not isinstance(obj, dict):
+        raise ValueError("spatial field must be a GeoJSON object")
+
+    raw_bbox = obj.get("bbox")
+    if isinstance(raw_bbox, list) and len(raw_bbox) == 4:
+        return _validate_bbox_values(raw_bbox)
+
+    typ = obj.get("type")
+    if typ == "Feature":
+        geometry = obj.get("geometry")
+        if not geometry:
+            raise ValueError("GeoJSON Feature has no geometry")
+        return _bbox_from_geojson_obj(geometry)
+    if typ == "FeatureCollection":
+        features = obj.get("features") or []
+        return _merge_bboxes([_bbox_from_geojson_obj(feature) for feature in features])
+    if typ == "GeometryCollection":
+        geometries = obj.get("geometries") or []
+        return _merge_bboxes([_bbox_from_geojson_obj(geometry) for geometry in geometries])
+
+    coordinates = obj.get("coordinates")
+    if coordinates is None:
+        raise ValueError("GeoJSON geometry has no coordinates")
+    return _bbox_from_positions(list(_iter_positions(coordinates)))
+
+
+def _spatial_value(package: dict[str, Any]) -> Any:
+    spatial = package.get("spatial")
+    if spatial:
+        return spatial
+    for extra in package.get("extras") or []:
+        if isinstance(extra, dict) and extra.get("key") == "spatial" and extra.get("value"):
+            return extra["value"]
+    return None
 
 
 def _validate_url_ssrf(url: str, allowed_host: str) -> None:
@@ -238,3 +329,31 @@ def resolve_dataset_raster_urls(dataset_id: str, max_resources: int = 10) -> lis
         out.append({"resource_id": resource_id, "url": url, "name": name})
 
     return out
+
+
+def resolve_dataset_bbox(dataset_id: str) -> list[float]:
+    """Resolve a CKAN dataset's ``spatial`` GeoJSON field to a WGS84 bbox.
+
+    Parameters
+    ----------
+    dataset_id:
+        CKAN dataset ID or slug.
+
+    Returns
+    -------
+    list[float]
+        ``[west, south, east, north]``.
+
+    Raises
+    ------
+    CKANResolveError
+        If the dataset cannot be fetched or has no valid spatial GeoJSON.
+    """
+    result = _ckan_api_get("package_show", {"id": dataset_id}, settings.ckan_url)
+    spatial = _spatial_value(result)
+    if not spatial:
+        raise CKANResolveError(f"CKAN dataset {dataset_id!r} has no spatial GeoJSON field")
+    try:
+        return _bbox_from_geojson_obj(spatial)
+    except ValueError as exc:
+        raise CKANResolveError(f"CKAN dataset {dataset_id!r} has invalid spatial GeoJSON: {exc}") from exc

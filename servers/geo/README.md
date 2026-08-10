@@ -1,9 +1,9 @@
 # dso-geo MCP Server
 
-A FastMCP stdio server that dispatches GDAL operations to a pre-registered
-Tapis Abaco actor, enabling AI models and MCP clients to run geospatial
-metadata extraction and raster transformations on data stored on TACC Corral
-— without downloading files locally.
+A FastMCP stdio server that exposes DSO geospatial tools to AI models and MCP
+clients. It provides synchronous reverse-geocoding through Nominatim and
+dispatches GDAL metadata extraction / raster transformations to a pre-registered
+Tapis Abaco actor for data stored on TACC Corral.
 
 ## Quick start
 
@@ -42,10 +42,10 @@ auth proxy.
 - A pre-registered Tapis Abaco actor running the GHCR image
   `ghcr.io/wmobley/mcp-suite/gdal-actor`.  Register the actor once; paste
   the actor ID into `GEO_ACTOR_ID`.  **dso-geo never registers actors at
-  runtime.**
+  runtime.** This is required for GDAL tools, but not for reverse geocoding.
 - Tapis JWT (obtained via `scripts/tapis-oauth/get-jwt.sh`).  Pass as
   `tapis_token` per-call argument or set `GEO_TAPIS_TOKEN` env fallback
-  (metadata tools only).
+  (metadata tools only). Reverse-geocoding tools ignore `tapis_token`.
 
 ## Environment variables
 
@@ -60,6 +60,25 @@ auth proxy.
 | `GEO_POLL_RETRIES` | no | `1` | Retries per poll call |
 
 ## Tools
+
+### Geocoding (read-only, synchronous)
+
+These tools call the public Nominatim reverse-geocoding API directly and return
+immediately. They do **not** dispatch Abaco, return `execution_id`, or require
+polling.
+
+**`reverse_geocode(lat, lon, zoom=None, tapis_token=None)`**
+Resolve one WGS84 coordinate to a human-readable place label. When `zoom` is
+omitted, the tool tries zoom 14 and falls back to zoom 10 if the first result is
+only state/country level. `tapis_token` is accepted for signature consistency
+but ignored.
+
+**`reverse_geocode_bbox(bbox=None, dataset_id=None, tapis_token=None)`**
+Resolve a representative place label for an extent. Pass exactly one of
+`bbox=[west, south, east, north]` or `dataset_id`; the dataset path reads CKAN's
+`spatial` GeoJSON field. The bbox algorithm samples centroid + southwest +
+northeast, accepts city/county labels when a majority agrees, and otherwise
+falls back to the centroid's finest available place field.
 
 ### Metadata (read-only)
 
@@ -100,9 +119,11 @@ Returns `result` (actor JSON) on COMPLETE; `error` on FAILED/ERROR.
 
 ```
 1. Use dso-ckan tools to find a dataset and resource_id.
-2. Call gdalinfo_extract(resource_id, tapis_token="eyJ...")
+2. For a place label, call reverse_geocode_bbox(dataset_id="...")
+   → {"name": "New Braunfels, Texas", "tier": "city", "agreement": true}
+3. For raster metadata, call gdalinfo_extract(resource_id, tapis_token="eyJ...")
    → {"execution_id": "abc123", "status": "SUBMITTED"}
-3. Poll get_execution_status("abc123", tapis_token="eyJ...")
+4. Poll get_execution_status("abc123", tapis_token="eyJ...")
    → {"status": "RUNNING", ...}  (poll again)
    → {"status": "COMPLETE", "result": {"metadata": {...}}}
 ```
@@ -141,6 +162,10 @@ does NOT call dso-ckan via MCP.
 - **Transform token gate**: Transform tools explicitly require `tapis_token`
   and do NOT fall back to the `GEO_TAPIS_TOKEN` env var, reducing ambient
   write exposure.
+- **Nominatim policy guardrails**: Reverse-geocoding calls use an identifying
+  User-Agent, in-process cache, no retries, and a one-request-per-second live
+  request throttle. Do not use this server for bulk geocoding or grid scans;
+  deploy a dedicated provider/self-hosted Nominatim for larger workloads.
 
 ## Tests
 
