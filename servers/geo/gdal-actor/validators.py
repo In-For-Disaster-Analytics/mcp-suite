@@ -31,6 +31,7 @@ ALLOWED_OPERATIONS: frozenset[str] = frozenset([
     # MODFLOW / rasterio operations (require flopy + rasterio in image)
     "extract_point", "aggregate_gma",
     "extract_budget_gma", "extract_satthk_gma", "hds_to_geotiff",
+    "rasterize_points", "dis_top_to_geotiff",
 ])
 
 _COMPRESSION_ENUM: frozenset[str] = frozenset(["deflate", "lzw", "zstd", "none"])
@@ -43,6 +44,13 @@ _WGS84_LAT_MIN, _WGS84_LAT_MAX = -90.0, 90.0
 
 _MAX_OVERVIEW_LEVELS = 10
 _MAX_CLIP_VERTICES = 1000
+
+_FIELD_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
+_ATTRIBUTE_FILTER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\s*=\s*-?\d+(\.\d+)?$")
+_MAX_CRS_WKT_LEN = 20_000
+_CRS_WKT_ROOT_NODES = (
+    "GEOGCRS", "PROJCRS", "COMPOUNDCRS", "BOUNDCRS", "GEOCCS", "PROJCS", "GEOGCS",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -317,3 +325,111 @@ def validate_clip_geometry(geometry: Any) -> dict[str, Any]:
             f"maximum allowed is {_MAX_CLIP_VERTICES}"
         )
     return geometry
+
+
+# ---------------------------------------------------------------------------
+# value_field / layer_name — safe OGR identifier guard (rasterize_points)
+# ---------------------------------------------------------------------------
+
+
+def validate_field_name(name: Any) -> str:
+    """Validate *name* as a safe OGR field/layer identifier.
+
+    Must match ``^[A-Za-z_][A-Za-z0-9_]{0,63}$`` — a bare identifier, never a
+    raw string forwarded to a shell. Used for both the ``-a`` burn field and
+    the optional ``-l`` layer name of ``gdal_rasterize``.
+
+    >>> validate_field_name("storativit")
+    'storativit'
+    >>> validate_field_name("1; drop")
+    Traceback (most recent call last):
+        ...
+    ValueError: ...
+    """
+    if not isinstance(name, str) or not _FIELD_NAME_RE.match(name):
+        raise ValueError(
+            "field name must match ^[A-Za-z_][A-Za-z0-9_]{0,63}$ (bare identifier only)"
+        )
+    return name
+
+
+# ---------------------------------------------------------------------------
+# attribute_filter — narrow "<field> = <number>" guard (rasterize_points)
+# ---------------------------------------------------------------------------
+
+
+def validate_attribute_filter(where: Any) -> str:
+    """Validate *where* is a simple ``<field> = <number>`` equality filter.
+
+    Deliberately narrow (not general SQL) — this is forwarded to
+    ``gdal_rasterize -where`` as a subprocess argument, so only a single
+    equality comparison is permitted (e.g. selecting one MODFLOW layer out of
+    a stacked point dataset: ``"layer = 4"``).
+
+    >>> validate_attribute_filter("layer = 4")
+    'layer = 4'
+    >>> validate_attribute_filter("1=1 OR 1=1")
+    Traceback (most recent call last):
+        ...
+    ValueError: ...
+    """
+    if not isinstance(where, str) or not _ATTRIBUTE_FILTER_RE.match(where.strip()):
+        raise ValueError(
+            "attribute_filter must match '<field> = <number>' (a single equality only)"
+        )
+    return where.strip()
+
+
+# ---------------------------------------------------------------------------
+# pixel_size — positive bounded number guard (rasterize_points)
+# ---------------------------------------------------------------------------
+
+
+def validate_pixel_size(size: Any) -> float:
+    """Validate *size* is a positive number in (0, 1_000_000] (source CRS units).
+
+    >>> validate_pixel_size(1320)
+    1320.0
+    >>> validate_pixel_size(-1)
+    Traceback (most recent call last):
+        ...
+    ValueError: ...
+    """
+    if not isinstance(size, (int, float)) or isinstance(size, bool):
+        raise ValueError(f"pixel_size must be a number, got {type(size).__name__}")
+    size = float(size)
+    if not (0 < size <= 1_000_000):
+        raise ValueError("pixel_size must be in (0, 1000000]")
+    return size
+
+
+# ---------------------------------------------------------------------------
+# crs_wkt — bounded, structurally-sane WKT guard (dis_top_to_geotiff)
+# ---------------------------------------------------------------------------
+
+
+def validate_crs_wkt(wkt: Any) -> str:
+    """Validate *wkt* looks like a CRS WKT string (length-capped, recognized root node).
+
+    This only guards against resource exhaustion and obvious garbage; full
+    parsing (and the corresponding clean error on malformed WKT) happens in
+    rasterio at write time, since this module has no rasterio dependency.
+
+    >>> validate_crs_wkt('GEOGCRS["WGS 84"]')
+    'GEOGCRS["WGS 84"]'
+    >>> validate_crs_wkt("not a crs")
+    Traceback (most recent call last):
+        ...
+    ValueError: ...
+    """
+    if not isinstance(wkt, str) or not wkt.strip():
+        raise ValueError("crs_wkt must be a non-empty string")
+    if len(wkt) > _MAX_CRS_WKT_LEN:
+        raise ValueError(f"crs_wkt exceeds maximum length of {_MAX_CRS_WKT_LEN} characters")
+    head = wkt.lstrip()[:20].upper()
+    if not any(head.startswith(k) for k in _CRS_WKT_ROOT_NODES):
+        raise ValueError(
+            "crs_wkt does not look like a CRS WKT string "
+            f"(must start with one of {sorted(_CRS_WKT_ROOT_NODES)})"
+        )
+    return wkt

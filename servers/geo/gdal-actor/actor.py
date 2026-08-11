@@ -76,15 +76,20 @@ import tempfile
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from validators import (
     ALLOWED_OPERATIONS,
+    validate_attribute_filter,
     validate_clip_geometry,
     validate_compression,
+    validate_crs_wkt,
+    validate_field_name,
     validate_input_url,
     validate_operation,
     validate_output_name,
     validate_overview_levels,
+    validate_pixel_size,
     validate_target_crs,
 )
 
@@ -525,6 +530,186 @@ def _run_hds_to_geotiff(
             pass
 
 
+def _run_rasterize_points(
+    input_url: str,
+    output_path: Path,
+    value_field: str,
+    pixel_size: float,
+    attribute_filter: str | None,
+    layer_name: str | None,
+    read_token: str,
+) -> None:
+    """Rasterize a numeric field from a point/polygon vector layer (e.g. a
+    GeoParquet of per-model-cell values) onto a regular grid via
+    gdal_rasterize, preserving the source layer's CRS. ``attribute_filter``
+    (a single "<field> = <number>" equality) lets a stacked multi-layer
+    dataset be split by e.g. MODFLOW layer without a separate extract step.
+    """
+    suffix = Path(urlparse(input_url).path).suffix or ".parquet"
+    tmp = _download_to_temp(input_url, suffix, read_token)
+    try:
+        args: list[str] = [
+            "gdal_rasterize", "-a", value_field,
+            "-tr", str(pixel_size), str(pixel_size),
+            "-a_nodata", "-9999", "-init", "-9999",
+        ]
+        if attribute_filter:
+            args += ["-where", attribute_filter]
+        if layer_name:
+            args += ["-l", layer_name]
+        args += [tmp, str(output_path)]
+        result = subprocess.run(
+            args,
+            capture_output=True,
+            text=True,
+            timeout=int(os.environ.get("RASTERIZE_TIMEOUT", "300")),
+            shell=False,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(_scrub(result.stderr[:500]))
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
+# MODFLOW 6 text DIS package block names that carry a NROW*NCOL (or NCOL/NROW)
+# INTERNAL-FACTOR numeric array, in the shape flopy's DIS writer emits them.
+_DIS_BLOCK_RE = re.compile(
+    r"^  (delr|delc|top)\b.*?\n(.*?)(?=^  \w+\s*(?:LAYERED)?\s*\n|^END griddata)",
+    re.MULTILINE | re.DOTALL,
+)
+
+
+def _parse_dis_top(path: str) -> dict[str, Any]:
+    """Parse a MODFLOW 6 text DIS file's grid geometry + `top` array.
+
+    Deliberately does NOT use flopy.discretization.StructuredGrid for the
+    coordinate transform: that class's get_coords() silently drops the
+    xoff/yoff translation for arrays at real-model size (confirmed with a
+    1124x1412 grid — reproduces with synthetic data of the same shape, so it
+    is a library issue, not a data issue). The grid geometry values
+    (xorigin/yorigin/angrot/delr/delc/top) are still read from the file with
+    a plain, independently-testable parser; the affine transform is built by
+    the caller from MODFLOW's documented rotation convention directly.
+    """
+    text = Path(path).read_text()
+
+    def _opt(name: str) -> float | None:
+        m = re.search(rf"^\s*{name}\s+([-\d.eE+]+)", text, re.MULTILINE | re.IGNORECASE)
+        return float(m.group(1)) if m else None
+
+    def _dim(name: str) -> int:
+        m = re.search(rf"^\s*{name}\s+(\d+)", text, re.MULTILINE | re.IGNORECASE)
+        if not m:
+            raise RuntimeError(f"DIS file missing dimension {name}")
+        return int(m.group(1))
+
+    xoff = _opt("XORIGIN") or 0.0
+    yoff = _opt("YORIGIN") or 0.0
+    angrot = _opt("ANGROT") or 0.0
+    nrow = _dim("NROW")
+    ncol = _dim("NCOL")
+
+    grid_start = text.index("BEGIN griddata")
+    # Keep the "END griddata" marker IN the slice: _DIS_BLOCK_RE's lookahead
+    # needs it to terminate whichever block happens to be last (e.g. a file
+    # with no botm/idomain after top) — excluding it left the last block
+    # unmatched.
+    grid_end = text.index("END griddata") + len("END griddata")
+    grid_text = text[grid_start:grid_end]
+
+    blocks: dict[str, str] = {}
+    for m in _DIS_BLOCK_RE.finditer(grid_text):
+        blocks[m.group(1)] = m.group(2)
+    for required in ("delr", "delc", "top"):
+        if required not in blocks:
+            raise RuntimeError(f"DIS file missing griddata block: {required}")
+
+    def _parse_internal(block: str, count: int) -> "np.ndarray":
+        import numpy as np
+        lines = block.strip().split("\n")
+        header = lines[0].strip()
+        hm = re.match(r"INTERNAL\s+FACTOR\s+([-\d.eE+]+)", header, re.IGNORECASE)
+        if not hm:
+            raise RuntimeError(f"expected INTERNAL FACTOR array, got: {header!r}")
+        factor = float(hm.group(1))
+        values = " ".join(lines[1:]).split()
+        if len(values) < count:
+            raise RuntimeError(
+                f"DIS array short: expected {count} values, found {len(values)}"
+            )
+        return np.array(values[:count], dtype=np.float64) * factor
+
+    delr = _parse_internal(blocks["delr"], ncol)
+    delc = _parse_internal(blocks["delc"], nrow)
+    top = _parse_internal(blocks["top"], nrow * ncol).reshape(nrow, ncol)
+
+    return {
+        "xoff": xoff, "yoff": yoff, "angrot": angrot,
+        "nrow": nrow, "ncol": ncol, "delr": delr, "delc": delc, "top": top,
+    }
+
+
+def _run_dis_top_to_geotiff(
+    input_url: str,
+    output_path: Path,
+    crs_wkt: str | None,
+    read_token: str,
+) -> None:
+    """Extract the land-surface `top` array from a MODFLOW 6 text DIS package
+    and write it as a rotation-aware georeferenced GeoTIFF.
+
+    The affine transform follows MODFLOW's documented grid convention
+    directly (row 0 / col 0 at the model's upper-left, y decreasing downward
+    in the unrotated local frame, then rotated by ANGROT degrees
+    counterclockwise about (XORIGIN, YORIGIN) and translated) — see
+    _parse_dis_top's docstring for why this is not delegated to flopy.
+    """
+    try:
+        import numpy as np
+        import rasterio
+    except ImportError as exc:
+        raise RuntimeError("numpy / rasterio not installed in this actor image") from exc
+
+    tmp = _download_to_temp(input_url, ".dis", read_token)
+    try:
+        geom = _parse_dis_top(tmp)
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+    theta = np.radians(geom["angrot"])
+    ct, st = np.cos(theta), np.sin(theta)
+    dx0, dy0 = float(geom["delr"][0]), float(geom["delc"][0])
+    if not (np.allclose(geom["delr"], dx0) and np.allclose(geom["delc"], dy0)):
+        raise RuntimeError(
+            "DIS grid has non-uniform cell spacing; a single GeoTIFF affine "
+            "transform cannot represent a variable-spacing grid"
+        )
+    length_y = float(geom["delc"].sum())
+    a, b = ct * dx0, st * dy0
+    d, e = st * dx0, -ct * dy0
+    c = geom["xoff"] - st * length_y
+    f = geom["yoff"] + ct * length_y
+    transform = rasterio.transform.Affine(a, b, c, d, e, f)
+
+    top = geom["top"].astype(np.float32)
+    top[top <= -9999] = np.nan
+
+    kwargs: dict[str, Any] = dict(
+        driver="GTiff", height=geom["nrow"], width=geom["ncol"],
+        count=1, dtype=np.float32, transform=transform, nodata=np.nan,
+    )
+    if crs_wkt:
+        kwargs["crs"] = crs_wkt
+    with rasterio.open(str(output_path), "w", **kwargs) as dst:
+        dst.write(top, 1)
+
+
 def _run_overviews(
     vsicurl_path: str,
     output_path: Path,
@@ -725,6 +910,46 @@ def main() -> None:
             ts = int(params.get("timestep", 1))
             try:
                 _run_hds_to_geotiff(input_url, layer, sp, ts, output_path, read_token)
+            except (RuntimeError, ValueError) as exc:
+                print(json.dumps({"status": "error", "message": str(exc)}))
+                sys.exit(1)
+
+        elif op == "rasterize_points":
+            try:
+                out_name = validate_output_name(output_name_raw or "rasterized.tif")
+                value_field = validate_field_name(params.get("value_field", ""))
+                pixel_size = validate_pixel_size(params.get("pixel_size"))
+                attribute_filter = params.get("attribute_filter")
+                if attribute_filter is not None:
+                    attribute_filter = validate_attribute_filter(attribute_filter)
+                layer_name = params.get("layer_name")
+                if layer_name is not None:
+                    layer_name = validate_field_name(layer_name)
+            except ValueError as exc:
+                print(json.dumps({"status": "error", "message": str(exc)}))
+                sys.exit(1)
+            output_path = _output_dir() / out_name
+            try:
+                _run_rasterize_points(
+                    input_url, output_path, value_field, pixel_size,
+                    attribute_filter, layer_name, read_token,
+                )
+            except (RuntimeError, ValueError) as exc:
+                print(json.dumps({"status": "error", "message": str(exc)}))
+                sys.exit(1)
+
+        elif op == "dis_top_to_geotiff":
+            try:
+                out_name = validate_output_name(output_name_raw or "dis_top.tif")
+                crs_wkt = params.get("crs_wkt")
+                if crs_wkt is not None:
+                    crs_wkt = validate_crs_wkt(crs_wkt)
+            except ValueError as exc:
+                print(json.dumps({"status": "error", "message": str(exc)}))
+                sys.exit(1)
+            output_path = _output_dir() / out_name
+            try:
+                _run_dis_top_to_geotiff(input_url, output_path, crs_wkt, read_token)
             except (RuntimeError, ValueError) as exc:
                 print(json.dumps({"status": "error", "message": str(exc)}))
                 sys.exit(1)

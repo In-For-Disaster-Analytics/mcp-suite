@@ -23,12 +23,16 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from validators import (
     ALLOWED_OPERATIONS,
+    validate_attribute_filter,
     validate_clip_geometry,
     validate_compression,
+    validate_crs_wkt,
+    validate_field_name,
     validate_input_url,
     validate_operation,
     validate_output_name,
     validate_overview_levels,
+    validate_pixel_size,
     validate_target_crs,
 )
 
@@ -484,3 +488,136 @@ class TestValidateInputUrl:
     def test_rejects_gopher_scheme(self):
         with pytest.raises(ValueError):
             validate_input_url("gopher://example.com/1/path")
+
+
+# ===========================================================================
+# validate_field_name (rasterize_points: -a / -l identifiers)
+# ===========================================================================
+
+
+class TestValidateFieldName:
+    def test_valid_identifier(self):
+        assert validate_field_name("storativit") == "storativit"
+
+    def test_valid_with_underscore(self):
+        assert validate_field_name("model_layer_4") == "model_layer_4"
+
+    def test_rejects_leading_digit(self):
+        with pytest.raises(ValueError):
+            validate_field_name("4layer")
+
+    def test_rejects_shell_metacharacters(self):
+        with pytest.raises(ValueError):
+            validate_field_name("field; rm -rf /")
+
+    def test_rejects_flag_like_value(self):
+        with pytest.raises(ValueError):
+            validate_field_name("-a")
+
+    def test_rejects_empty(self):
+        with pytest.raises(ValueError):
+            validate_field_name("")
+
+    def test_rejects_non_string(self):
+        with pytest.raises(ValueError):
+            validate_field_name(123)
+
+    def test_rejects_too_long(self):
+        with pytest.raises(ValueError):
+            validate_field_name("a" * 65)
+
+
+# ===========================================================================
+# validate_attribute_filter (rasterize_points: -where)
+# ===========================================================================
+
+
+class TestValidateAttributeFilter:
+    def test_valid_integer_equality(self):
+        assert validate_attribute_filter("layer = 4") == "layer = 4"
+
+    def test_valid_no_spaces(self):
+        assert validate_attribute_filter("layer=4") == "layer=4"
+
+    def test_valid_decimal(self):
+        assert validate_attribute_filter("depth = 1.5") == "depth = 1.5"
+
+    def test_rejects_or_injection(self):
+        with pytest.raises(ValueError):
+            validate_attribute_filter("1=1 OR 1=1")
+
+    def test_rejects_string_literal(self):
+        with pytest.raises(ValueError):
+            validate_attribute_filter("name = 'x'")
+
+    def test_rejects_semicolon(self):
+        with pytest.raises(ValueError):
+            validate_attribute_filter("layer = 4; DROP TABLE x")
+
+    def test_rejects_non_string(self):
+        with pytest.raises(ValueError):
+            validate_attribute_filter(4)
+
+
+# ===========================================================================
+# validate_pixel_size (rasterize_points: -tr)
+# ===========================================================================
+
+
+class TestValidatePixelSize:
+    def test_valid_int(self):
+        assert validate_pixel_size(1320) == 1320.0
+
+    def test_valid_float(self):
+        assert validate_pixel_size(0.5) == 0.5
+
+    def test_rejects_zero(self):
+        with pytest.raises(ValueError):
+            validate_pixel_size(0)
+
+    def test_rejects_negative(self):
+        with pytest.raises(ValueError):
+            validate_pixel_size(-100)
+
+    def test_rejects_too_large(self):
+        with pytest.raises(ValueError):
+            validate_pixel_size(2_000_000)
+
+    def test_rejects_bool(self):
+        with pytest.raises(ValueError):
+            validate_pixel_size(True)
+
+    def test_rejects_non_number(self):
+        with pytest.raises(ValueError):
+            validate_pixel_size("1320")
+
+
+# ===========================================================================
+# validate_crs_wkt (dis_top_to_geotiff)
+# ===========================================================================
+
+
+class TestValidateCrsWkt:
+    def test_valid_geogcrs(self):
+        wkt = 'GEOGCRS["WGS 84"]'
+        assert validate_crs_wkt(wkt) == wkt
+
+    def test_valid_compoundcrs(self):
+        wkt = 'COMPOUNDCRS["GAM + NAVD88 height"]'
+        assert validate_crs_wkt(wkt) == wkt
+
+    def test_rejects_non_wkt_string(self):
+        with pytest.raises(ValueError):
+            validate_crs_wkt("not a crs")
+
+    def test_rejects_empty(self):
+        with pytest.raises(ValueError):
+            validate_crs_wkt("")
+
+    def test_rejects_too_long(self):
+        with pytest.raises(ValueError):
+            validate_crs_wkt('GEOGCRS["' + "x" * 20_000 + '"]')
+
+    def test_rejects_non_string(self):
+        with pytest.raises(ValueError):
+            validate_crs_wkt(123)
