@@ -206,6 +206,57 @@ class TestRunDisTopToGeotiff:
             actor._run_dis_top_to_geotiff("https://example.com/bad.dis", tmp_path / "out.tif", None, "")
 
 
+class TestRunHdsAggregateGma:
+    def test_converts_hds_and_aggregates_same_actor_execution(self, monkeypatch):
+        def fake_hds_to_geotiff(input_url, layer, stress_period, timestep, output_path, read_token):
+            data = np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32)
+            with rasterio.open(
+                str(output_path),
+                "w",
+                driver="GTiff",
+                height=2,
+                width=2,
+                count=1,
+                dtype=np.float32,
+                crs="EPSG:4326",
+                transform=rasterio.transform.from_origin(0, 2, 1, 1),
+                nodata=np.nan,
+            ) as ds:
+                ds.write(data, 1)
+
+        monkeypatch.setattr(actor, "_run_hds_to_geotiff", fake_hds_to_geotiff)
+        boundary = {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "properties": {"GMAnum": 12},
+                    "geometry": {
+                        "type": "Polygon",
+                        "coordinates": [[(0, 0), (2, 0), (2, 2), (0, 2), (0, 0)]],
+                    },
+                }
+            ],
+        }
+
+        result = actor._run_hds_aggregate_gma(
+            "https://example.com/heads.hds",
+            boundary,
+            layer=1,
+            stress_period=1,
+            timestep=1,
+            band=1,
+            gma_id="GMA 12",
+            read_token="",
+        )
+
+        assert result["value"] == pytest.approx(2.5)
+        assert result["pixel_count"] == 4
+        assert result["source_format"] == "hds"
+        assert result["layer"] == 1
+        assert result["gma_id"] == "GMA 12"
+
+
 # ===========================================================================
 # _run_rasterize_points — requires the gdal_rasterize CLI
 # ===========================================================================

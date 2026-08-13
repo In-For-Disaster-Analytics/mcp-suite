@@ -60,7 +60,7 @@ The actor reads its input from one of three sources (in priority order):
 | Field | Type | Required | Notes |
 |---|---|---|---|
 | `operation` | string | yes | One of `gdalinfo`, `reproject`, `cog`, `clip`, `overviews` |
-| `input_url` | string | yes | http(s) URL; read via GDAL `/vsicurl/` |
+| `input_url` | string | yes | `http(s)` URL or `tapis://system/path`; private reads use `X-Tapis-Token` |
 | `output_name` | string | for non-`gdalinfo` ops | Bare filename, validated `^[A-Za-z0-9_\-.]+$`, must end `.tif` |
 | `params` | object | depends on op | See per-operation details below |
 | `include_stats` | bool | no | `gdalinfo` only; compute band statistics (slower) |
