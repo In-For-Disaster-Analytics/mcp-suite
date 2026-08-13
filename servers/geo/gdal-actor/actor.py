@@ -10,7 +10,7 @@ Message schema
 --------------
 {
     "operation":    "gdalinfo" | "reproject" | "cog" | "clip" | "overviews",
-    "input_url":    "https://...",        # must be http(s)
+    "input_url":    "https://..." | "tapis://system/path",
     "output_name":  "result.tif",         # validated bare filename; ignored for gdalinfo
     "params": {
         "target_crs":      4326,          # reproject only; int 1–999999
@@ -76,7 +76,7 @@ import tempfile
 import time
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 from validators import (
     ALLOWED_OPERATIONS,
@@ -303,13 +303,26 @@ def _run_clip(
         raise RuntimeError(_scrub(result.stderr[:500]))
 
 
+def _download_request_url(url: str, read_token: str) -> str:
+    """Resolve supported input URI schemes to an HTTP URL urllib can read."""
+    parsed = urlparse(url)
+    if parsed.scheme != "tapis":
+        return url
+    if not read_token:
+        raise RuntimeError("read_token is required for tapis:// input_url downloads")
+    base = os.environ.get("TAPIS_BASE_URL", "https://portals.tapis.io").rstrip("/")
+    system_id = quote(parsed.netloc, safe="")
+    path = quote(parsed.path.lstrip("/"), safe="/")
+    return f"{base}/v3/files/content/{system_id}/{path}"
+
+
 def _download_to_temp(url: str, suffix: str, read_token: str = "") -> str:
     """Download *url* to a temp file and return its path. Caller must os.unlink."""
     import urllib.request as _ur
     headers: dict[str, str] = {}
     if read_token:
         headers["X-Tapis-Token"] = read_token
-    req = urllib.request.Request(url, headers=headers)
+    req = _ur.Request(_download_request_url(url, read_token), headers=headers)
     fd, path = tempfile.mkstemp(suffix=suffix)
     try:
         with _ur.urlopen(req, timeout=int(os.environ.get("DOWNLOAD_TIMEOUT", "600"))) as resp:
@@ -351,6 +364,60 @@ def _run_extract_point(
             pass
 
 
+def _boundary_shapes(boundary_geojson: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return geometry shapes from a GeoJSON geometry, Feature, or FeatureCollection."""
+    kind = boundary_geojson.get("type")
+    if kind == "FeatureCollection":
+        shapes = [
+            feature.get("geometry")
+            for feature in boundary_geojson.get("features", [])
+            if feature.get("geometry")
+        ]
+    elif kind == "Feature":
+        shapes = [boundary_geojson.get("geometry")]
+    elif kind in ("Polygon", "MultiPolygon"):
+        shapes = [boundary_geojson]
+    else:
+        shapes = []
+    if not shapes:
+        raise ValueError("boundary_geojson must contain at least one Polygon or MultiPolygon geometry")
+    return shapes
+
+
+def _aggregate_raster_path(
+    raster_path: str | Path,
+    boundary_geojson: dict[str, Any],
+    band: int,
+    gma_id: str,
+) -> dict[str, Any]:
+    """Compute the mean raster value within a GMA polygon from a local GeoTIFF."""
+    try:
+        import numpy as np  # type: ignore
+        import rasterio  # type: ignore
+        import rasterio.mask  # type: ignore
+    except ImportError as exc:
+        raise RuntimeError("rasterio / numpy not installed in this actor image") from exc
+
+    shapes = _boundary_shapes(boundary_geojson)
+    with rasterio.open(str(raster_path)) as ds:
+        out_image, _ = rasterio.mask.mask(
+            ds, shapes, crop=True, nodata=np.nan, indexes=band,
+        )
+        nodata = ds.nodata
+    arr = out_image.astype(float)
+    if nodata is not None:
+        arr[arr == nodata] = np.nan
+    valid = arr[~np.isnan(arr)]
+    if len(valid) == 0:
+        raise RuntimeError("no valid pixels within GMA boundary")
+    return {
+        "value": float(np.mean(valid)),
+        "pixel_count": int(len(valid)),
+        "gma_id": gma_id,
+        "band": band,
+    }
+
+
 def _run_aggregate_gma(
     input_url: str,
     boundary_geojson: dict[str, Any],
@@ -359,32 +426,9 @@ def _run_aggregate_gma(
     read_token: str,
 ) -> dict[str, Any]:
     """Compute the mean raster value within a GMA polygon."""
-    try:
-        import numpy as np  # type: ignore
-        import rasterio  # type: ignore
-        import rasterio.mask  # type: ignore
-    except ImportError as exc:
-        raise RuntimeError("rasterio / numpy not installed in this actor image") from exc
-
     tmp = _download_to_temp(input_url, ".tif", read_token)
     try:
-        with rasterio.open(tmp) as ds:
-            out_image, _ = rasterio.mask.mask(
-                ds, [boundary_geojson], crop=True, nodata=np.nan, indexes=band,
-            )
-            nodata = ds.nodata
-        arr = out_image.astype(float)
-        if nodata is not None:
-            arr[arr == nodata] = np.nan
-        valid = arr[~np.isnan(arr)]
-        if len(valid) == 0:
-            raise RuntimeError("no valid pixels within GMA boundary")
-        return {
-            "value": float(np.mean(valid)),
-            "pixel_count": int(len(valid)),
-            "gma_id": gma_id,
-            "band": band,
-        }
+        return _aggregate_raster_path(tmp, boundary_geojson, band, gma_id)
     finally:
         try:
             os.unlink(tmp)
@@ -526,6 +570,43 @@ def _run_hds_to_geotiff(
     finally:
         try:
             os.unlink(tmp)
+        except OSError:
+            pass
+
+
+def _run_hds_aggregate_gma(
+    input_url: str,
+    boundary_geojson: dict[str, Any],
+    layer: int,
+    stress_period: int,
+    timestep: int,
+    band: int,
+    gma_id: str,
+    read_token: str,
+) -> dict[str, Any]:
+    """Convert MODFLOW HDS to a temporary GeoTIFF and aggregate it in one actor run."""
+    fd, tmp_tif = tempfile.mkstemp(suffix=".tif", prefix="hds_gma_")
+    os.close(fd)
+    try:
+        _run_hds_to_geotiff(
+            input_url,
+            layer,
+            stress_period,
+            timestep,
+            Path(tmp_tif),
+            read_token,
+        )
+        result = _aggregate_raster_path(tmp_tif, boundary_geojson, band, gma_id)
+        result.update({
+            "source_format": "hds",
+            "layer": layer,
+            "stress_period": stress_period,
+            "timestep": timestep,
+        })
+        return result
+    finally:
+        try:
+            os.unlink(tmp_tif)
         except OSError:
             pass
 
@@ -876,6 +957,25 @@ def main() -> None:
             gma_id = str(params.get("gma_id", ""))
             try:
                 response.update(_run_aggregate_gma(input_url, boundary, band, gma_id, read_token))
+            except (RuntimeError, ValueError) as exc:
+                print(json.dumps({"status": "error", "message": str(exc)}))
+                sys.exit(1)
+
+        elif op == "hds_aggregate_gma":
+            boundary = params.get("boundary_geojson")
+            if boundary is None:
+                print(json.dumps({"status": "error",
+                                  "message": "params.boundary_geojson required for hds_aggregate_gma"}))
+                sys.exit(1)
+            layer = int(params.get("layer", 1))
+            sp = int(params.get("stress_period", 1))
+            ts = int(params.get("timestep", 1))
+            band = int(params.get("band", 1))
+            gma_id = str(params.get("gma_id", ""))
+            try:
+                response.update(_run_hds_aggregate_gma(
+                    input_url, boundary, layer, sp, ts, band, gma_id, read_token,
+                ))
             except (RuntimeError, ValueError) as exc:
                 print(json.dumps({"status": "error", "message": str(exc)}))
                 sys.exit(1)

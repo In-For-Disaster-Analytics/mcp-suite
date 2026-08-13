@@ -44,7 +44,7 @@ from validators import (
 
 class TestValidateOperation:
     def test_all_allowed(self):
-        for op in ["gdalinfo", "reproject", "cog", "clip", "overviews"]:
+        for op in sorted(ALLOWED_OPERATIONS):
             assert validate_operation(op) == op
 
     def test_rejects_shell_injection(self):
@@ -437,6 +437,18 @@ class TestValidateInputUrl:
     def test_valid_http(self):
         url = "http://localhost:5001/resource/download/file.tif"
         assert validate_input_url(url) == url
+
+    def test_valid_tapis_uri(self):
+        url = "tapis://ls6/modflow/demo/ntgam-v301/heads.hds"
+        assert validate_input_url(url) == url
+
+    def test_rejects_tapis_without_path(self):
+        with pytest.raises(ValueError):
+            validate_input_url("tapis://ls6")
+
+    def test_rejects_tapis_path_traversal(self):
+        with pytest.raises(ValueError):
+            validate_input_url("tapis://ls6/modflow/../secret.hds")
 
     def test_rejects_file_scheme(self):
         with pytest.raises(ValueError):

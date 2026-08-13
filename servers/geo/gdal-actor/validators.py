@@ -12,7 +12,7 @@ Contract (locked by Decision 7 in the design spec):
   - overview_levels : list of int, each 2–512, at most 10 elements
   - clip_geometry   : GeoJSON dict, type Polygon or MultiPolygon,
                       coords within WGS84 bounds, at most 1000 vertices
-  - input_url       : http(s) scheme; if ALLOWED_HOST env is set, host must match
+  - input_url       : http(s) or tapis scheme; if ALLOWED_HOST env is set, host must match
 """
 
 from __future__ import annotations
@@ -31,6 +31,7 @@ ALLOWED_OPERATIONS: frozenset[str] = frozenset([
     # MODFLOW / rasterio operations (require flopy + rasterio in image)
     "extract_point", "aggregate_gma",
     "extract_budget_gma", "extract_satthk_gma", "hds_to_geotiff",
+    "hds_aggregate_gma",
     "rasterize_points", "dis_top_to_geotiff",
 ])
 
@@ -83,7 +84,7 @@ def validate_operation(op: Any) -> str:
 
 
 def validate_input_url(url: Any) -> str:
-    """Validate *url* is an http(s) URL and, if ALLOWED_HOST is set, matches it.
+    """Validate *url* is an http(s) or tapis URL and, if ALLOWED_HOST is set, matches it.
 
     Returns the validated URL string on success, raises ValueError on failure.
     Never logs the URL token portions.
@@ -95,9 +96,16 @@ def validate_input_url(url: Any) -> str:
     if not isinstance(url, str):
         raise ValueError("input_url must be a string")
     parsed = urlparse(url)
+    if parsed.scheme == "tapis":
+        if not parsed.netloc or not parsed.path.strip("/"):
+            raise ValueError("tapis input_url must include a system and path")
+        if any(part == ".." for part in parsed.path.split("/")):
+            raise ValueError("tapis input_url path must not contain '..'")
+        return url
+
     if parsed.scheme not in ("http", "https"):
         raise ValueError(
-            f"input_url must use http or https scheme (got {parsed.scheme!r})"
+            f"input_url must use http, https, or tapis scheme (got {parsed.scheme!r})"
         )
     if not parsed.netloc:
         raise ValueError("input_url has no host")
