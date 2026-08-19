@@ -81,6 +81,7 @@ from urllib.parse import quote, urlparse
 from validators import (
     ALLOWED_OPERATIONS,
     validate_attribute_filter,
+    validate_boundary_uri,
     validate_clip_geometry,
     validate_compression,
     validate_crs_wkt,
@@ -335,6 +336,61 @@ def _download_to_temp(url: str, suffix: str, read_token: str = "") -> str:
             pass
         raise
     return path
+
+
+def _gma_number(value: Any) -> int | None:
+    digits = "".join(ch for ch in str(value) if ch.isdigit())
+    return int(digits) if digits else None
+
+
+def _arcgis_query_url(layer_uri: str, gma_id: str) -> str:
+    """Return an ArcGIS query URL for FeatureServer/MapServer boundary layers."""
+    from urllib.parse import parse_qsl, urlencode
+
+    base, _, query = layer_uri.partition("?")
+    existing = dict(parse_qsl(query, keep_blank_values=True))
+    gma_num = _gma_number(gma_id)
+    if gma_num is None and "where" not in existing:
+        raise ValueError("gma_id must include a numeric identifier for ArcGIS boundary queries")
+    existing.update({
+        "where": f"GMAnum={gma_num}" if gma_num is not None else existing["where"],
+        "outFields": existing.get("outFields", "*"),
+        "returnGeometry": existing.get("returnGeometry", "true"),
+        "f": "geojson",
+    })
+    if not base.rstrip("/").lower().endswith("/query"):
+        base = base.rstrip("/") + "/query"
+    return base + "?" + urlencode(existing)
+
+
+def _load_boundary_geojson(
+    boundary_geojson: dict[str, Any] | None,
+    boundary_uri: str,
+    gma_id: str,
+    read_token: str,
+) -> dict[str, Any]:
+    """Return boundary GeoJSON from an inline object or a validated URI."""
+    if boundary_geojson is not None and boundary_uri:
+        raise ValueError("provide only one of params.boundary_geojson or params.boundary_uri")
+    if boundary_geojson is not None:
+        if not isinstance(boundary_geojson, dict):
+            raise ValueError("params.boundary_geojson must be a GeoJSON object")
+        return boundary_geojson
+    boundary_uri = validate_boundary_uri(boundary_uri)
+    low = boundary_uri.lower()
+    fetch_uri = _arcgis_query_url(boundary_uri, gma_id) if "/featureserver/" in low or "/mapserver/" in low else boundary_uri
+    tmp = _download_to_temp(fetch_uri, ".geojson", read_token)
+    try:
+        with open(tmp, "r", encoding="utf-8") as fh:
+            loaded = json.load(fh)
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+    if not isinstance(loaded, dict):
+        raise ValueError("boundary_uri did not resolve to a GeoJSON object")
+    return loaded
 
 
 def _run_extract_point(
@@ -919,6 +975,12 @@ def main() -> None:
 
     gdal_ver = _gdal_version()
     vsicurl_path = _vsicurl(input_url)
+    response: dict[str, Any] = {
+        "status": "ok",
+        "operation": op,
+        "gdal_version": gdal_ver,
+        "metrics": {},
+    }
 
     # --- Build extra subprocess env for private reads ---
     extra_env: dict[str, str] = {}
@@ -949,13 +1011,15 @@ def main() -> None:
 
         elif op == "aggregate_gma":
             boundary = params.get("boundary_geojson")
-            if boundary is None:
+            boundary_uri = str(params.get("boundary_uri") or "")
+            if boundary is None and not boundary_uri:
                 print(json.dumps({"status": "error",
-                                  "message": "params.boundary_geojson required for aggregate_gma"}))
+                                  "message": "params.boundary_geojson or params.boundary_uri required for aggregate_gma"}))
                 sys.exit(1)
             band = int(params.get("band", 1))
             gma_id = str(params.get("gma_id", ""))
             try:
+                boundary = _load_boundary_geojson(boundary, boundary_uri, gma_id, read_token)
                 response.update(_run_aggregate_gma(input_url, boundary, band, gma_id, read_token))
             except (RuntimeError, ValueError) as exc:
                 print(json.dumps({"status": "error", "message": str(exc)}))
@@ -963,9 +1027,10 @@ def main() -> None:
 
         elif op == "hds_aggregate_gma":
             boundary = params.get("boundary_geojson")
-            if boundary is None:
+            boundary_uri = str(params.get("boundary_uri") or "")
+            if boundary is None and not boundary_uri:
                 print(json.dumps({"status": "error",
-                                  "message": "params.boundary_geojson required for hds_aggregate_gma"}))
+                                  "message": "params.boundary_geojson or params.boundary_uri required for hds_aggregate_gma"}))
                 sys.exit(1)
             layer = int(params.get("layer", 1))
             sp = int(params.get("stress_period", 1))
@@ -973,6 +1038,7 @@ def main() -> None:
             band = int(params.get("band", 1))
             gma_id = str(params.get("gma_id", ""))
             try:
+                boundary = _load_boundary_geojson(boundary, boundary_uri, gma_id, read_token)
                 response.update(_run_hds_aggregate_gma(
                     input_url, boundary, layer, sp, ts, band, gma_id, read_token,
                 ))
@@ -1120,12 +1186,7 @@ def main() -> None:
     # -----------------------------------------------------------------
     # Compose success response
     # -----------------------------------------------------------------
-    response: dict[str, Any] = {
-        "status": "ok",
-        "operation": op,
-        "gdal_version": gdal_ver,
-        "metrics": {"duration_ms": duration_ms},
-    }
+    response["metrics"] = {"duration_ms": duration_ms}
     if output_path is not None:
         response["output_path"] = str(output_path)
     if metadata_result is not None:
