@@ -124,6 +124,53 @@ def validate_input_url(url: Any) -> str:
     return url
 
 
+def _host_allowed(request_host: str, allowed_hosts: str) -> bool:
+    """Return true if request_host matches a comma-separated host allowlist."""
+    host = request_host.lower()
+    for allowed in (item.strip().lower() for item in allowed_hosts.split(",")):
+        if not allowed:
+            continue
+        allowed = allowed.split(":")[0]
+        if allowed.startswith("*."):
+            suffix = allowed[1:]
+            if host.endswith(suffix):
+                return True
+        elif host == allowed:
+            return True
+    return False
+
+
+def validate_boundary_uri(uri: Any) -> str:
+    """Validate a boundary URI used by aggregate_gma operations.
+
+    Boundary URIs may be HTTPS/HTTP GeoJSON or ArcGIS FeatureServer/MapServer
+    endpoints, or tapis:// files. If ALLOWED_BOUNDARY_HOSTS is set, HTTP(S)
+    hosts must match the comma-separated allowlist. tapis:// URIs follow the
+    same path traversal guard as input_url.
+    """
+    if not isinstance(uri, str) or not uri.strip():
+        raise ValueError("boundary_uri must be a non-empty string")
+    parsed = urlparse(uri)
+    if parsed.scheme == "tapis":
+        if not parsed.netloc or not parsed.path.strip("/"):
+            raise ValueError("tapis boundary_uri must include a system and path")
+        if any(part == ".." for part in parsed.path.split("/")):
+            raise ValueError("tapis boundary_uri path must not contain '..'")
+        return uri
+
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(
+            f"boundary_uri must use http, https, or tapis scheme (got {parsed.scheme!r})"
+        )
+    if not parsed.netloc:
+        raise ValueError("boundary_uri has no host")
+
+    allowed_hosts = os.environ.get("ALLOWED_BOUNDARY_HOSTS", "").strip()
+    if allowed_hosts and not _host_allowed(parsed.hostname or "", allowed_hosts):
+        raise ValueError("boundary_uri host is not permitted")
+    return uri
+
+
 # ---------------------------------------------------------------------------
 # target_crs — EPSG integer guard
 # ---------------------------------------------------------------------------
