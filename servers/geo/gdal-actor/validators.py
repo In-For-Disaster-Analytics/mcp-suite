@@ -171,6 +171,36 @@ def validate_boundary_uri(uri: Any) -> str:
     return uri
 
 
+def validate_grid_uri(uri: Any) -> str:
+    """Validate a model grid/DIS URI used by HDS georeferencing.
+
+    Grid URIs may be HTTPS/HTTP resources or tapis:// files. If
+    ALLOWED_GRID_HOSTS is set, HTTP(S) hosts must match the comma-separated
+    allowlist. tapis:// URIs follow the same path traversal guard as input_url.
+    """
+    if not isinstance(uri, str) or not uri.strip():
+        raise ValueError("grid_uri must be a non-empty string")
+    parsed = urlparse(uri)
+    if parsed.scheme == "tapis":
+        if not parsed.netloc or not parsed.path.strip("/"):
+            raise ValueError("tapis grid_uri must include a system and path")
+        if any(part == ".." for part in parsed.path.split("/")):
+            raise ValueError("tapis grid_uri path must not contain '..'")
+        return uri
+
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(
+            f"grid_uri must use http, https, or tapis scheme (got {parsed.scheme!r})"
+        )
+    if not parsed.netloc:
+        raise ValueError("grid_uri has no host")
+
+    allowed_hosts = os.environ.get("ALLOWED_GRID_HOSTS", "").strip()
+    if allowed_hosts and not _host_allowed(parsed.hostname or "", allowed_hosts):
+        raise ValueError("grid_uri host is not permitted")
+    return uri
+
+
 # ---------------------------------------------------------------------------
 # target_crs — EPSG integer guard
 # ---------------------------------------------------------------------------

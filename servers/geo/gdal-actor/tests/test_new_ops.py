@@ -208,7 +208,7 @@ class TestRunDisTopToGeotiff:
 
 class TestRunHdsAggregateGma:
     def test_converts_hds_and_aggregates_same_actor_execution(self, monkeypatch):
-        def fake_hds_to_geotiff(input_url, layer, stress_period, timestep, output_path, read_token):
+        def fake_hds_to_geotiff(input_url, layer, stress_period, timestep, output_path, read_token, dis_geom=None, crs_wkt=None):
             data = np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32)
             with rasterio.open(
                 str(output_path),
