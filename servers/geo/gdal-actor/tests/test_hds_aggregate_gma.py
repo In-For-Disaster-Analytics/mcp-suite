@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sys
 import json
+import types
 from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -193,3 +194,44 @@ def test_hds_aggregate_gma_keeps_conversion_and_aggregation_in_one_actor_run(mon
     assert result["value"] == 42.0
     assert result["source_format"] == "hds"
     assert result["layer"] == 2
+
+
+def test_hds_to_geotiff_wraps_parse_failures(monkeypatch, tmp_path):
+    hds_path = tmp_path / "bad.hds"
+    hds_path.write_bytes(b"not a valid HDS")
+
+    monkeypatch.setattr(actor, "_download_to_temp", lambda url, suffix, read_token="": str(hds_path))
+
+    class BrokenHeadFile:
+        def __init__(self, path):
+            raise EOFError
+
+    class FakeFlopyUtils:
+        HeadFile = BrokenHeadFile
+
+    monkeypatch.setitem(sys.modules, "flopy", types.SimpleNamespace(utils=FakeFlopyUtils))
+    monkeypatch.setitem(sys.modules, "flopy.utils", FakeFlopyUtils)
+    monkeypatch.setitem(
+        sys.modules,
+        "rasterio",
+        types.SimpleNamespace(
+            transform=types.SimpleNamespace(from_bounds=lambda *args, **kwargs: None),
+            open=lambda *args, **kwargs: None,
+        ),
+    )
+
+    try:
+        actor._run_hds_to_geotiff(
+            "https://ckan.tacc.utexas.edu/demo/bad.hds",
+            layer=1,
+            stress_period=1,
+            timestep=1,
+            output_path=tmp_path / "out.tif",
+            read_token="token",
+        )
+    except RuntimeError as exc:
+        message = str(exc)
+        assert "failed to parse or convert HDS input" in message
+        assert "EOFError" in message
+    else:
+        raise AssertionError("expected RuntimeError")

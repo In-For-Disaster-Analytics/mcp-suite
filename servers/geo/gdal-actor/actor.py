@@ -635,26 +635,31 @@ def _run_hds_to_geotiff(
 
     tmp = _download_to_temp(input_url, ".hds", read_token)
     try:
-        hf = flopy.utils.HeadFile(tmp)
-        kstpkper = (timestep - 1, stress_period - 1)  # flopy uses 0-indexed
         try:
-            head = hf.get_data(kstpkper=kstpkper)
-        except Exception:
-            head = hf.get_alldata()[-1]
-        layer_data = head[layer - 1].astype(np.float32)
-        layer_data[layer_data < -1e29] = np.nan   # mask HDRY / inactive
-        nrow, ncol = layer_data.shape
-        # Pixel-space transform; real CRS/extent requires the DIS package geometry.
-        transform = rasterio.transform.from_bounds(0, 0, ncol, nrow, ncol, nrow)
-        with rasterio.open(
-            str(output_path), "w",
-            driver="GTiff", height=nrow, width=ncol,
-            count=1, dtype=np.float32,
-            crs="EPSG:4326",   # placeholder — override when grid_uri is available
-            transform=transform,
-            nodata=np.nan,
-        ) as dst:
-            dst.write(layer_data, 1)
+            hf = flopy.utils.HeadFile(tmp)
+            kstpkper = (timestep - 1, stress_period - 1)  # flopy uses 0-indexed
+            try:
+                head = hf.get_data(kstpkper=kstpkper)
+            except Exception:
+                head = hf.get_alldata()[-1]
+            layer_data = head[layer - 1].astype(np.float32)
+            layer_data[layer_data < -1e29] = np.nan   # mask HDRY / inactive
+            nrow, ncol = layer_data.shape
+            # Pixel-space transform; real CRS/extent requires the DIS package geometry.
+            transform = rasterio.transform.from_bounds(0, 0, ncol, nrow, ncol, nrow)
+            with rasterio.open(
+                str(output_path), "w",
+                driver="GTiff", height=nrow, width=ncol,
+                count=1, dtype=np.float32,
+                crs="EPSG:4326",   # placeholder — override when grid_uri is available
+                transform=transform,
+                nodata=np.nan,
+            ) as dst:
+                dst.write(layer_data, 1)
+        except Exception as exc:
+            raise RuntimeError(
+                f"failed to parse or convert HDS input {input_url}: {type(exc).__name__}: {exc}"
+            ) from exc
     finally:
         try:
             os.unlink(tmp)
