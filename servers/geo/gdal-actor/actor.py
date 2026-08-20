@@ -319,17 +319,49 @@ def _download_request_url(url: str, read_token: str) -> str:
 
 def _download_to_temp(url: str, suffix: str, read_token: str = "") -> str:
     """Download *url* to a temp file and return its path. Caller must os.unlink."""
+    import urllib.error as _ue
     import urllib.request as _ur
     headers: dict[str, str] = {}
     if read_token:
         headers["X-Tapis-Token"] = read_token
-    req = _ur.Request(_download_request_url(url, read_token), headers=headers)
+    request_url = _download_request_url(url, read_token)
+    req = _ur.Request(request_url, headers=headers)
     fd, path = tempfile.mkstemp(suffix=suffix)
     try:
         with _ur.urlopen(req, timeout=int(os.environ.get("DOWNLOAD_TIMEOUT", "600"))) as resp:
             with os.fdopen(fd, "wb") as fh:
                 fh.write(resp.read())
+    except _ue.HTTPError as exc:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        try:
+            body = exc.read().decode(errors="replace")[:300]
+        except Exception:
+            body = ""
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+        raise RuntimeError(
+            _scrub(f"download failed for {url}: HTTP {exc.code} {body}")
+        ) from exc
+    except _ue.URLError as exc:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+        raise RuntimeError(_scrub(f"download failed for {url}: {exc.reason}")) from exc
     except Exception:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
         try:
             os.unlink(path)
         except OSError:
