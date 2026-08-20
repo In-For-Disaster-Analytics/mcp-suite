@@ -28,6 +28,7 @@ from validators import (
     validate_compression,
     validate_crs_wkt,
     validate_field_name,
+    validate_grid_uri,
     validate_input_url,
     validate_operation,
     validate_output_name,
@@ -500,6 +501,31 @@ class TestValidateInputUrl:
     def test_rejects_gopher_scheme(self):
         with pytest.raises(ValueError):
             validate_input_url("gopher://example.com/1/path")
+
+
+# ===========================================================================
+# validate_grid_uri
+# ===========================================================================
+
+
+class TestValidateGridUri:
+    def test_accepts_https_grid_uri(self):
+        url = "https://ckan.tacc.utexas.edu/model/ntgam.dis"
+        assert validate_grid_uri(url) == url
+
+    def test_accepts_tapis_grid_uri(self):
+        url = "tapis://ls6/model/ntgam.dis"
+        assert validate_grid_uri(url) == url
+
+    def test_rejects_path_traversal(self):
+        with pytest.raises(ValueError, match="grid_uri path must not contain"):
+            validate_grid_uri("tapis://ls6/model/../secret.dis")
+
+    def test_honors_allowed_grid_hosts(self, monkeypatch):
+        monkeypatch.setenv("ALLOWED_GRID_HOSTS", "ckan.tacc.utexas.edu")
+        assert validate_grid_uri("https://ckan.tacc.utexas.edu/model/ntgam.dis")
+        with pytest.raises(ValueError, match="grid_uri host is not permitted"):
+            validate_grid_uri("https://evil.example/model/ntgam.dis")
 
 
 # ===========================================================================

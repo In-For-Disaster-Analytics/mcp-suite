@@ -148,7 +148,7 @@ def test_tapis_uri_download_requires_read_token():
 def test_hds_aggregate_gma_keeps_conversion_and_aggregation_in_one_actor_run(monkeypatch):
     calls = {}
 
-    def fake_hds_to_geotiff(input_url, layer, stress_period, timestep, output_path, read_token):
+    def fake_hds_to_geotiff(input_url, layer, stress_period, timestep, output_path, read_token, dis_geom=None, crs_wkt=None):
         calls["convert"] = {
             "input_url": input_url,
             "layer": layer,
@@ -156,6 +156,8 @@ def test_hds_aggregate_gma_keeps_conversion_and_aggregation_in_one_actor_run(mon
             "timestep": timestep,
             "output_path": Path(output_path),
             "read_token": read_token,
+            "dis_geom": dis_geom,
+            "crs_wkt": crs_wkt,
         }
         Path(output_path).write_text("synthetic geotiff")
 
@@ -195,6 +197,39 @@ def test_hds_aggregate_gma_keeps_conversion_and_aggregation_in_one_actor_run(mon
     assert result["value"] == 42.0
     assert result["source_format"] == "hds"
     assert result["layer"] == 2
+
+
+def test_hds_aggregate_gma_downloads_grid_uri(monkeypatch, tmp_path):
+    calls = {}
+
+    def fake_parse(grid_uri, read_token):
+        calls["grid_uri"] = grid_uri
+        calls["grid_token"] = read_token
+        return {"nrow": 2, "ncol": 3, "delr": [1, 1, 1], "delc": [1, 1], "xoff": 0, "yoff": 0, "angrot": 0}
+
+    def fake_hds_to_geotiff(input_url, layer, stress_period, timestep, output_path, read_token, dis_geom=None, crs_wkt=None):
+        calls["dis_geom"] = dis_geom
+        Path(output_path).write_text("synthetic geotiff")
+
+    monkeypatch.setattr(actor, "_download_and_parse_dis", fake_parse)
+    monkeypatch.setattr(actor, "_run_hds_to_geotiff", fake_hds_to_geotiff)
+    monkeypatch.setattr(actor, "_aggregate_raster_path", lambda *args: {"value": 1.0, "pixel_count": 1})
+
+    actor._run_hds_aggregate_gma(
+        "https://example.com/heads.hds",
+        {"type": "Polygon", "coordinates": [[(0, 0), (1, 0), (1, 1), (0, 0)]]},
+        layer=1,
+        stress_period=1,
+        timestep=1,
+        band=1,
+        gma_id="GMA 12",
+        read_token="token",
+        grid_uri="tapis://ls6/model/ntgam.dis",
+    )
+
+    assert calls["grid_uri"] == "tapis://ls6/model/ntgam.dis"
+    assert calls["grid_token"] == "token"
+    assert calls["dis_geom"]["nrow"] == 2
 
 
 def test_hds_to_geotiff_wraps_parse_failures(monkeypatch, tmp_path):
@@ -253,3 +288,44 @@ def test_read_single_record_hds_like_accepts_ckan_demo_shape(tmp_path):
     assert data.shape == (nrow, ncol)
     assert data.dtype == np.float32
     assert data.tolist() == [[1, 2, 3], [4, 5, 6]]
+
+
+def test_hds_to_geotiff_rejects_grid_dimension_mismatch(monkeypatch, tmp_path):
+    import numpy as np
+
+    hds_path = tmp_path / "single_record.hds"
+    values = np.array([1, 2, 3, 4, 5, 6], dtype="<f4")
+    header = struct.pack("<iiff16sii", 1, 1, 0.0, 0.0, b"LAYER01         ", 3, 2)
+    hds_path.write_bytes(header + values.tobytes())
+    monkeypatch.setattr(actor, "_download_to_temp", lambda url, suffix, read_token="": str(hds_path))
+
+    class BrokenHeadFile:
+        def __init__(self, path):
+            raise EOFError
+
+    class FakeFlopyUtils:
+        HeadFile = BrokenHeadFile
+
+    monkeypatch.setitem(sys.modules, "flopy", types.SimpleNamespace(utils=FakeFlopyUtils))
+    monkeypatch.setitem(sys.modules, "flopy.utils", FakeFlopyUtils)
+    monkeypatch.setitem(
+        sys.modules,
+        "rasterio",
+        types.SimpleNamespace(transform=types.SimpleNamespace(from_bounds=lambda *args, **kwargs: None)),
+    )
+
+    try:
+        actor._run_hds_to_geotiff(
+            "https://example.com/head.hds",
+            layer=1,
+            stress_period=1,
+            timestep=1,
+            output_path=tmp_path / "out.tif",
+            read_token="token",
+            dis_geom={"nrow": 1124, "ncol": 1412, "delr": np.ones(1412), "delc": np.ones(1124), "xoff": 0, "yoff": 0, "angrot": 0},
+        )
+    except RuntimeError as exc:
+        message = str(exc)
+        assert "HDS dimensions (2x3) do not match DIS grid (1124x1412)" in message
+    else:
+        raise AssertionError("expected RuntimeError")

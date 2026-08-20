@@ -87,12 +87,18 @@ from validators import (
     validate_compression,
     validate_crs_wkt,
     validate_field_name,
+    validate_grid_uri,
     validate_input_url,
     validate_operation,
     validate_output_name,
     validate_overview_levels,
     validate_pixel_size,
     validate_target_crs,
+)
+
+GAM_ALBERS_USFT_CRS = (
+    "+proj=aea +lat_0=31.25 +lon_0=-100 +lat_1=27.5 +lat_2=35 "
+    "+x_0=1500000 +y_0=6000000 +datum=NAD83 +units=us-ft +no_defs"
 )
 
 logger = logging.getLogger(__name__)
@@ -484,11 +490,14 @@ def _aggregate_raster_path(
         import numpy as np  # type: ignore
         import rasterio  # type: ignore
         import rasterio.mask  # type: ignore
+        import rasterio.warp  # type: ignore
     except ImportError as exc:
         raise RuntimeError("rasterio / numpy not installed in this actor image") from exc
 
     shapes = _boundary_shapes(boundary_geojson)
     with rasterio.open(str(raster_path)) as ds:
+        if ds.crs and ds.crs.to_string() not in ("EPSG:4326", "OGC:CRS84"):
+            shapes = [rasterio.warp.transform_geom("EPSG:4326", ds.crs, shape) for shape in shapes]
         out_image, _ = rasterio.mask.mask(
             ds, shapes, crop=True, nodata=np.nan, indexes=band,
         )
@@ -625,6 +634,8 @@ def _run_hds_to_geotiff(
     timestep: int,
     output_path: Path,
     read_token: str,
+    dis_geom: dict[str, Any] | None = None,
+    crs_wkt: str | None = None,
 ) -> None:
     """Convert a MODFLOW HDS binary file to a single-band GeoTIFF."""
     try:
@@ -650,15 +661,27 @@ def _run_hds_to_geotiff(
                     layer_data = _read_single_record_hds_like(tmp, np)
                 except Exception:
                     raise flopy_exc
+            if dis_geom is not None and layer_data.shape != (dis_geom["nrow"], dis_geom["ncol"]):
+                raise RuntimeError(
+                    "HDS dimensions "
+                    f"({layer_data.shape[0]}x{layer_data.shape[1]}) do not match DIS grid "
+                    f"({dis_geom['nrow']}x{dis_geom['ncol']}). Ensure grid_uri points to "
+                    "the DIS package matching this HDS output."
+                )
             layer_data[layer_data < -1e29] = np.nan   # mask HDRY / inactive
             nrow, ncol = layer_data.shape
-            # Pixel-space transform; real CRS/extent requires the DIS package geometry.
-            transform = rasterio.transform.from_bounds(0, 0, ncol, nrow, ncol, nrow)
+            if dis_geom is not None:
+                transform = _dis_affine_transform(dis_geom, np, rasterio)
+                crs = crs_wkt or GAM_ALBERS_USFT_CRS
+            else:
+                # Pixel-space fallback for backward compatibility when no grid_uri is supplied.
+                transform = rasterio.transform.from_bounds(0, 0, ncol, nrow, ncol, nrow)
+                crs = "EPSG:4326"
             with rasterio.open(
                 str(output_path), "w",
                 driver="GTiff", height=nrow, width=ncol,
                 count=1, dtype=np.float32,
-                crs="EPSG:4326",   # placeholder — override when grid_uri is available
+                crs=crs,
                 transform=transform,
                 nodata=np.nan,
             ) as dst:
@@ -672,6 +695,34 @@ def _run_hds_to_geotiff(
             os.unlink(tmp)
         except OSError:
             pass
+
+
+def _download_and_parse_dis(grid_uri: str, read_token: str) -> dict[str, Any]:
+    tmp = _download_to_temp(grid_uri, ".dis", read_token)
+    try:
+        return _parse_dis_top(tmp)
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
+def _dis_affine_transform(dis_geom: dict[str, Any], np_module: Any, rasterio_module: Any) -> Any:
+    dx0, dy0 = float(dis_geom["delr"][0]), float(dis_geom["delc"][0])
+    if not (np_module.allclose(dis_geom["delr"], dx0) and np_module.allclose(dis_geom["delc"], dy0)):
+        raise RuntimeError(
+            "DIS grid has non-uniform cell spacing; a single GeoTIFF affine "
+            "transform cannot represent a variable-spacing grid"
+        )
+    theta = np_module.radians(dis_geom["angrot"])
+    ct, st = np_module.cos(theta), np_module.sin(theta)
+    length_y = float(dis_geom["delc"].sum())
+    a, b = ct * dx0, st * dy0
+    d, e = st * dx0, -ct * dy0
+    c = dis_geom["xoff"] - st * length_y
+    f = dis_geom["yoff"] + ct * length_y
+    return rasterio_module.transform.Affine(a, b, c, d, e, f)
 
 
 def _read_single_record_hds_like(path: str, np_module: Any) -> Any:
@@ -716,11 +767,14 @@ def _run_hds_aggregate_gma(
     band: int,
     gma_id: str,
     read_token: str,
+    grid_uri: str = "",
+    crs_wkt: str | None = None,
 ) -> dict[str, Any]:
     """Convert MODFLOW HDS to a temporary GeoTIFF and aggregate it in one actor run."""
     fd, tmp_tif = tempfile.mkstemp(suffix=".tif", prefix="hds_gma_")
     os.close(fd)
     try:
+        dis_geom = _download_and_parse_dis(grid_uri, read_token) if grid_uri else None
         _run_hds_to_geotiff(
             input_url,
             layer,
@@ -728,6 +782,8 @@ def _run_hds_aggregate_gma(
             timestep,
             Path(tmp_tif),
             read_token,
+            dis_geom,
+            crs_wkt,
         )
         result = _aggregate_raster_path(tmp_tif, boundary_geojson, band, gma_id)
         result.update({
@@ -1114,10 +1170,16 @@ def main() -> None:
             ts = int(params.get("timestep", 1))
             band = int(params.get("band", 1))
             gma_id = str(params.get("gma_id", ""))
+            grid_uri = str(params.get("grid_uri") or "")
+            crs_wkt = params.get("crs_wkt")
             try:
+                if grid_uri:
+                    grid_uri = validate_grid_uri(grid_uri)
+                if crs_wkt is not None:
+                    crs_wkt = validate_crs_wkt(crs_wkt)
                 boundary = _load_boundary_geojson(boundary, boundary_uri, gma_id, read_token)
                 response.update(_run_hds_aggregate_gma(
-                    input_url, boundary, layer, sp, ts, band, gma_id, read_token,
+                    input_url, boundary, layer, sp, ts, band, gma_id, read_token, grid_uri, crs_wkt,
                 ))
             except (RuntimeError, ValueError) as exc:
                 print(json.dumps({"status": "error", "message": str(exc)}))
