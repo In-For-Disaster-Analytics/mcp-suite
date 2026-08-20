@@ -70,6 +70,7 @@ import json
 import logging
 import os
 import re
+import struct
 import subprocess
 import sys
 import tempfile
@@ -636,13 +637,19 @@ def _run_hds_to_geotiff(
     tmp = _download_to_temp(input_url, ".hds", read_token)
     try:
         try:
-            hf = flopy.utils.HeadFile(tmp)
-            kstpkper = (timestep - 1, stress_period - 1)  # flopy uses 0-indexed
             try:
-                head = hf.get_data(kstpkper=kstpkper)
-            except Exception:
-                head = hf.get_alldata()[-1]
-            layer_data = head[layer - 1].astype(np.float32)
+                hf = flopy.utils.HeadFile(tmp)
+                kstpkper = (timestep - 1, stress_period - 1)  # flopy uses 0-indexed
+                try:
+                    head = hf.get_data(kstpkper=kstpkper)
+                except Exception:
+                    head = hf.get_alldata()[-1]
+                layer_data = head[layer - 1].astype(np.float32)
+            except Exception as flopy_exc:
+                try:
+                    layer_data = _read_single_record_hds_like(tmp, np)
+                except Exception:
+                    raise flopy_exc
             layer_data[layer_data < -1e29] = np.nan   # mask HDRY / inactive
             nrow, ncol = layer_data.shape
             # Pixel-space transform; real CRS/extent requires the DIS package geometry.
@@ -665,6 +672,39 @@ def _run_hds_to_geotiff(
             os.unlink(tmp)
         except OSError:
             pass
+
+
+def _read_single_record_hds_like(path: str, np_module: Any) -> Any:
+    """Read a CKAN-style single-record HDS-like raster missing the ``ilay`` field.
+
+    Standard MODFLOW binary head records include ``kstp, kper, pertim, totim,
+    text, ncol, nrow, ilay`` before the float grid. The NTGAM CKAN demo HDS
+    resource currently stores one already-extracted layer as
+    ``kstp, kper, pertim, totim, text, ncol, nrow`` plus ``nrow*ncol`` float32
+    values. FloPy treats that as EOF because the 4-byte ``ilay`` field is
+    absent, so this fallback accepts only that exact one-record shape.
+    """
+    size = os.path.getsize(path)
+    if size < 40:
+        raise ValueError("single-record HDS-like file is smaller than 40-byte header")
+    with open(path, "rb") as fh:
+        header = fh.read(40)
+    try:
+        _kstp, _kper, _pertim, _totim, text, ncol, nrow = struct.unpack("<iiff16sii", header)
+    except struct.error as exc:
+        raise ValueError("single-record HDS-like header could not be unpacked") from exc
+    text_value = text.decode("ascii", errors="replace").strip()
+    if not text_value:
+        raise ValueError("single-record HDS-like header has empty text label")
+    if nrow <= 0 or ncol <= 0 or nrow > 100000 or ncol > 100000:
+        raise ValueError(f"single-record HDS-like dimensions are invalid: {nrow}x{ncol}")
+    expected = 40 + (nrow * ncol * 4)
+    if size != expected:
+        raise ValueError(f"single-record HDS-like size mismatch: expected {expected} bytes, got {size}")
+    data = np_module.fromfile(path, dtype="<f4", offset=40)
+    if data.size != nrow * ncol:
+        raise ValueError(f"single-record HDS-like data size mismatch: expected {nrow * ncol}, got {data.size}")
+    return data.reshape((nrow, ncol)).astype(np_module.float32)
 
 
 def _run_hds_aggregate_gma(

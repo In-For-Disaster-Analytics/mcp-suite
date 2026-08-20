@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sys
 import json
+import struct
 import types
 from pathlib import Path
 
@@ -235,3 +236,20 @@ def test_hds_to_geotiff_wraps_parse_failures(monkeypatch, tmp_path):
         assert "EOFError" in message
     else:
         raise AssertionError("expected RuntimeError")
+
+
+def test_read_single_record_hds_like_accepts_ckan_demo_shape(tmp_path):
+    import numpy as np
+
+    hds_path = tmp_path / "single_record.hds"
+    nrow = 2
+    ncol = 3
+    values = np.array([1, 2, 3, 4, 5, 6], dtype="<f4")
+    header = struct.pack("<iiff16sii", 1, 1, 0.0, 0.0, b"LAYER01         ", ncol, nrow)
+    hds_path.write_bytes(header + values.tobytes())
+
+    data = actor._read_single_record_hds_like(str(hds_path), np)
+
+    assert data.shape == (nrow, ncol)
+    assert data.dtype == np.float32
+    assert data.tolist() == [[1, 2, 3], [4, 5, 6]]
