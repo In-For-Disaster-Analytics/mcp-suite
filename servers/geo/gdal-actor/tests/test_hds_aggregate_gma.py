@@ -26,6 +26,7 @@ def test_validate_boundary_uri_honors_allowed_boundary_hosts(monkeypatch):
     monkeypatch.setenv("ALLOWED_BOUNDARY_HOSTS", "*.arcgis.com,example.org")
 
     assert validate_boundary_uri("https://services.arcgis.com/demo/layer")
+    assert validate_boundary_uri("https://services.twdb.texas.gov/arcgis/rest/services/Base/GroundWaterConservationDistricts/MapServer/0/query?f=geojson")
     try:
         validate_boundary_uri("https://not-allowed.test/boundary.geojson")
     except ValueError as exc:
@@ -38,6 +39,91 @@ def test_load_boundary_geojson_accepts_inline_boundary():
     boundary = {"type": "Polygon", "coordinates": [[(0, 0), (1, 0), (1, 1), (0, 1), (0, 0)]]}
 
     assert actor._load_boundary_geojson(boundary, "", "GMA 12", "token") is boundary
+
+
+def test_extract_budget_prefers_first_exact_candidate(monkeypatch):
+    calls = []
+
+    class FakeCellBudgetFile:
+        textlist = [b"DRN", b"DRAINS"]
+
+        def __init__(self, path, precision):
+            self.precision = precision
+
+        def get_data(self, text):
+            calls.append(text)
+            return [[[1.0, 2.0]]] if text == "DRN" else [[[99.0]]]
+
+    fake_utils = types.SimpleNamespace(CellBudgetFile=FakeCellBudgetFile)
+    monkeypatch.setitem(sys.modules, "flopy", types.SimpleNamespace(utils=fake_utils))
+    monkeypatch.setitem(sys.modules, "flopy.utils", fake_utils)
+    monkeypatch.setattr(actor, "_download_to_temp", lambda *args: "/tmp/fake.cbc")
+    monkeypatch.setattr(actor.os, "unlink", lambda path: None)
+
+    result = actor._run_extract_budget_gma(
+        "tapis://ls6/example.cbc", ["DRN", "DRAINS"], "GMA 8", "token"
+    )
+
+    assert result["value"] == 3.0
+    assert result["selected_package"] == "DRN"
+    assert result["requested_packages"] == ["DRN", "DRAINS"]
+    assert calls == ["DRN"]
+
+
+def test_extract_budget_falls_back_to_legacy_drains_label(monkeypatch):
+    calls = []
+
+    class FakeCellBudgetFile:
+        textlist = ["DRAINS"]
+
+        def __init__(self, path, precision):
+            self.precision = precision
+
+        def get_data(self, text):
+            calls.append(text)
+            return [[[4.0, 5.0]]]
+
+    fake_utils = types.SimpleNamespace(CellBudgetFile=FakeCellBudgetFile)
+    monkeypatch.setitem(sys.modules, "flopy", types.SimpleNamespace(utils=fake_utils))
+    monkeypatch.setitem(sys.modules, "flopy.utils", fake_utils)
+    monkeypatch.setattr(actor, "_download_to_temp", lambda *args: "/tmp/fake.cbc")
+    monkeypatch.setattr(actor.os, "unlink", lambda path: None)
+
+    result = actor._run_extract_budget_gma(
+        "tapis://ls6/example.cbc", ["DRN", "DRAINS"], "GMA 8", "token"
+    )
+
+    assert result["value"] == 9.0
+    assert result["selected_package"] == "DRAINS"
+    assert calls == ["DRAINS"]
+
+
+def test_extract_budget_reports_requested_and_available_labels(monkeypatch):
+    class FakeCellBudgetFile:
+        textlist = ["FLOW RIGHT FACE", "WELLS"]
+
+        def __init__(self, path, precision):
+            self.precision = precision
+
+        def get_data(self, text):
+            raise AssertionError("unavailable labels must not be looked up")
+
+    fake_utils = types.SimpleNamespace(CellBudgetFile=FakeCellBudgetFile)
+    monkeypatch.setitem(sys.modules, "flopy", types.SimpleNamespace(utils=fake_utils))
+    monkeypatch.setitem(sys.modules, "flopy.utils", fake_utils)
+    monkeypatch.setattr(actor, "_download_to_temp", lambda *args: "/tmp/fake.cbc")
+    monkeypatch.setattr(actor.os, "unlink", lambda path: None)
+
+    try:
+        actor._run_extract_budget_gma(
+            "tapis://ls6/example.cbc", ["DRN", "DRAINS"], "GMA 8", "token"
+        )
+    except RuntimeError as exc:
+        message = str(exc)
+        assert "DRN" in message and "DRAINS" in message
+        assert "FLOW RIGHT FACE" in message and "WELLS" in message
+    else:
+        raise AssertionError("expected missing CBC label error")
 
 
 def test_load_boundary_geojson_downloads_boundary_uri(monkeypatch, tmp_path):

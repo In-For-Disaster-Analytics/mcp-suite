@@ -9,7 +9,8 @@ Reads an operation + params from one of three sources (in priority order):
 Message schema
 --------------
 {
-    "operation":    "gdalinfo" | "reproject" | "cog" | "clip" | "overviews",
+    "operation":    "gdalinfo" | "reproject" | "cog" | "clip" | "overviews"
+                    | "extract_budget_gma" | "extract_satthk_gma" | "hds_aggregate_gma",
     "input_url":    "https://..." | "tapis://system/path",
     "output_name":  "result.tif",         # validated bare filename; ignored for gdalinfo
     "params": {
@@ -534,35 +535,134 @@ def _run_aggregate_gma(
             pass
 
 
+_BUDGET_PACKAGE_LABELS = {
+    "DRN",
+    "DRAINS",
+    "RIV",
+    "RIVER LEAKAGE",
+    "GHB",
+    "WEL",
+    "EVT",
+    "RCH",
+    "CHD",
+    "SFR",
+}
+_MAX_BUDGET_PACKAGE_CANDIDATES = 8
+_MAX_BUDGET_PACKAGE_LABEL_LENGTH = 64
+
+
+def _budget_label_text(value: Any) -> str:
+    """Decode one FloPy CBC label without retaining binary padding."""
+    if isinstance(value, bytes):
+        value = value.decode("ascii", errors="replace")
+    return str(value).strip()
+
+
+def _budget_label_key(value: Any) -> str:
+    """Return the documented comparison form for a CBC record label."""
+    return " ".join(_budget_label_text(value).upper().split())
+
+
+def _budget_package_candidates(package: Any) -> list[str]:
+    """Validate and normalize scalar or ordered CBC package candidates.
+
+    The actor deliberately accepts only known package labels.  Candidate order
+    is the caller's deterministic preference order; matching itself remains
+    exact after whitespace/case normalization and never uses substring lookup.
+    """
+    raw_candidates = [package] if isinstance(package, str) else package
+    if raw_candidates is None:
+        raw_candidates = ["DRN"]
+    if not isinstance(raw_candidates, (list, tuple)):
+        raise ValueError("package candidates must be a string or list of strings")
+    if not raw_candidates or len(raw_candidates) > _MAX_BUDGET_PACKAGE_CANDIDATES:
+        raise ValueError(
+            f"package candidates must contain 1-{_MAX_BUDGET_PACKAGE_CANDIDATES} labels"
+        )
+
+    candidates: list[str] = []
+    seen: set[str] = set()
+    for raw in raw_candidates:
+        if not isinstance(raw, str):
+            raise ValueError("package candidates must contain only strings")
+        label = _budget_label_key(raw)
+        if not label or len(label) > _MAX_BUDGET_PACKAGE_LABEL_LENGTH:
+            raise ValueError("package candidate labels must be non-empty and <= 64 characters")
+        if label not in _BUDGET_PACKAGE_LABELS:
+            raise ValueError(
+                f"package {label!r} not allowed; permitted: {sorted(_BUDGET_PACKAGE_LABELS)}"
+            )
+        if label not in seen:
+            candidates.append(label)
+            seen.add(label)
+    if not candidates:
+        raise ValueError("package candidates must contain at least one unique label")
+    return candidates
+
+
 def _run_extract_budget_gma(
     input_url: str,
-    package: str,
+    package: str | list[str],
     gma_id: str,
     read_token: str,
 ) -> dict[str, Any]:
-    """Sum MODFLOW CBC budget flows for *package* across all active cells."""
+    """Sum the first exact matching MODFLOW CBC budget record.
+
+    ``package`` may be the legacy scalar label or an ordered candidate list.
+    The actual selected record is returned so downstream steps and provenance
+    can distinguish MODFLOW-6 ``DRN`` from legacy ``DRAINS`` files.
+    """
     try:
         import flopy.utils  # type: ignore
         import numpy as np  # type: ignore
     except ImportError as exc:
         raise RuntimeError("flopy / numpy not installed in this actor image") from exc
 
-    pkg = package.upper()
-    _ALLOWED_PKGS = {"DRN", "RIV", "GHB", "WEL", "EVT", "RCH", "CHD", "SFR"}
-    if pkg not in _ALLOWED_PKGS:
-        raise ValueError(f"package {pkg!r} not allowed; permitted: {sorted(_ALLOWED_PKGS)}")
+    candidates = _budget_package_candidates(package)
 
     tmp = _download_to_temp(input_url, ".cbc", read_token)
     try:
+        available: list[str] = []
+        selected: str | None = None
+        records: Any = None
+        lookup_error: str | None = None
         for precision in ("double", "single"):
-            cbf = flopy.utils.CellBudgetFile(tmp, precision=precision)
-            records = cbf.get_data(text=pkg)
-            if records:
-                break
-        if not records:
-            available = [t.strip() for t in cbf.textlist]
+            try:
+                cbf = flopy.utils.CellBudgetFile(tmp, precision=precision)
+                available = [_budget_label_text(label) for label in cbf.textlist]
+                available_by_key: dict[str, str] = {}
+                for label in available:
+                    key = _budget_label_key(label)
+                    previous = available_by_key.get(key)
+                    if previous is not None and previous != label:
+                        raise RuntimeError(
+                            f"ambiguous CBC record labels normalize to {key!r}: "
+                            f"{previous!r}, {label!r}"
+                        )
+                    available_by_key[key] = label
+                for candidate in candidates:
+                    available_label = available_by_key.get(candidate)
+                    if available_label is None:
+                        continue
+                    try:
+                        candidate_records = cbf.get_data(text=available_label)
+                    except Exception as exc:  # FloPy uses several exception types here.
+                        lookup_error = f"{type(exc).__name__}: {exc}"
+                        continue
+                    if candidate_records is not None and len(candidate_records) > 0:
+                        selected = available_label
+                        records = candidate_records
+                        break
+                if selected is not None:
+                    break
+            except Exception as exc:  # Try the alternate CBC precision before failing.
+                lookup_error = f"{type(exc).__name__}: {exc}"
+
+        if selected is None or records is None or len(records) == 0:
+            detail = f"; last lookup error: {lookup_error}" if lookup_error else ""
             raise RuntimeError(
-                f"package {pkg!r} not found in CBC file; available: {available}"
+                f"CBC budget record not found; requested candidates: {candidates}; "
+                f"available: {available}{detail}"
             )
         last = records[-1]
         if hasattr(last, "q"):
@@ -573,7 +673,10 @@ def _run_extract_budget_gma(
             total = float(np.sum(np.array(last)))
         return {
             "value": total,
-            "package": pkg,
+            "package": selected,
+            "selected_package": selected,
+            "requested_packages": candidates,
+            "available_packages": available,
             "gma_id": gma_id,
             "time_steps_read": len(records),
         }
@@ -1186,7 +1289,11 @@ def main() -> None:
                 sys.exit(1)
 
         elif op == "extract_budget_gma":
-            package = str(params.get("package", "DRN"))
+            package = (
+                params.get("packages")
+                or params.get("package_candidates")
+                or params.get("package", "DRN")
+            )
             gma_id = str(params.get("gma_id", ""))
             try:
                 response.update(_run_extract_budget_gma(input_url, package, gma_id, read_token))
