@@ -53,6 +53,17 @@ never sent a token. Tapis JWTs expire in hours.
 
 ¹ records a readiness row in the adapter (provenance only). ² write: dry-run by default. ³ catalog/registry write: dry-run by default **and** off unless `DYNAMO_ENABLE_CATALOG_WRITES=1`.
 
+### What a run needs: run parameters and framing
+
+`create_adapter_plan` returns a stored plan with `run_parameters`, sorted by who supplies each one:
+
+| Group | Meaning |
+|---|---|
+| `must_supply` | Pass these as `submit_etl_workflow` args; a run fails without them |
+| `optional` | A piece's own settings that have a default or may be left out |
+| `framing` | What the run is about: its time period (`start_date`, `end_date`) and area (`aoi_geojson_uri`, `lat`, `lon`). Required only when `used_by_plan`; recorded with the run when given |
+| `supplied_by_adapter` | Filled in by the service. Do not pass them |
+
 ### Model-bridge vs. ETL-only runs
 
 The adapter only accepts *composite* runs (model task + ETL pieces — the "model bridge") from Ensemble
