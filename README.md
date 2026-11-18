@@ -12,8 +12,9 @@ GDAL transform on it with the geo server.
 |--------|------|--------------|------|
 | **ckan** (`dso-ckan`) | [`servers/ckan/`](servers/ckan/) | Read/search CKAN datasets, inspect scheming schemas, validate metadata, and (token-gated) create/update datasets + upload resources. | Reads anonymous; writes use a Tapis JWT via `X-Tapis-Token`. |
 | **geo** (`dso-geo`) | [`servers/geo/`](servers/geo/) | Run GDAL metadata + transforms (reproject, COG, clip, overviews) on CKAN-hosted rasters via **Tapis Abaco actors**, reading inputs over `/vsicurl/` and registering outputs back to CKAN. | Tapis JWT (per call). |
+| **dynamo** (`dso-dynamo`) | [`servers/dynamo/`](servers/dynamo/) | Search, configure, author, run and monitor DYNAMO models on the Tapis Pods (model catalog, Ensemble Manager model-bridge runs, SVO adapter, semantic search). Writes are dry-run-first, `confirm`-gated and (catalog) env-gated. | Tapis JWT (per call or `DYNAMO_TAPIS_TOKEN`). |
 
-Both servers are implemented and tested. The CKAN server is also live-verified.
+The ckan and geo servers are implemented and tested; the dynamo server is implemented and unit-tested (mocked HTTP; not yet exercised against the live dev pods). The CKAN server is also live-verified.
 For the geo server: Phase-0a **passed** on the live Tapis tenant (the actor
 registers, runs, and returns results over Abaco), and the GDAL actor image is
 validated on real data ([`servers/geo/gdal-actor/`](servers/geo/gdal-actor/)).
@@ -24,6 +25,7 @@ CKAN URL — see [`servers/geo/README.md`](servers/geo/README.md).
 
 - [CKAN MCP server spec](docs/design/2026-06-29-ckan-mcp-server.md) — Implemented
 - [Geo (GDAL/Abaco) MCP server spec](docs/design/2026-06-29-geo-actor-mcp-server.md) — Implemented; Phase-0a passed
+- [DYNAMO MCP server spec](docs/design/2026-11-18-dynamo-mcp-server.md) — Implemented (mocked-HTTP tested)
 
 ## Quick start (CKAN server)
 
@@ -109,7 +111,8 @@ to the pushed tag and follow [`servers/geo/phase0a/README.md`](servers/geo/phase
 mcp-suite/
 ├── servers/
 │   ├── ckan/      # dso-ckan MCP server (implemented)
-│   └── geo/       # dso-geo: gdal-actor image + phase-0a proof-of-life kit
+│   ├── geo/       # dso-geo: gdal-actor image + phase-0a proof-of-life kit
+│   └── dynamo/    # dso-dynamo: DYNAMO models on Tapis Pods (search/configure/author/run/monitor)
 ├── docs/design/   # design specs (source of truth for decisions)
 └── .github/workflows/
 ```

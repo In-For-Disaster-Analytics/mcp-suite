@@ -38,6 +38,22 @@ jobs:
       - name: Run tests
         run: uv run pytest -q
 
+  dynamo-server:
+    name: DYNAMO server tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: servers/dynamo
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Sync deps
+        run: uv sync --extra dev
+      - name: Run tests
+        # HTTP is mocked; no DYNAMO pod is contacted.
+        run: uv run pytest -q
+
   gdal-actor-validators:
     name: GDAL actor validator tests
     runs-on: ubuntu-latest
