@@ -85,7 +85,11 @@ Prefer `tapis_function` unless the piece needs HPC resources.
     a script, so the adapter appends the call to the entrypoint.
   * Checked before any write: the source parses and is at most 64 kB, the entrypoint is a
     top-level non-async function, there is at least one input and one output, every standard
-    variable exists, and `env_from_args` binds no run-signal, token-fetch, CKAN or STAC credential.
+    variable exists, `env_from_args` binds no run-signal, token-fetch, CKAN or STAC credential, and
+    every other bound argument is declared in `parameters`.
+  * `parameters` is a JSON Schema for the piece's own run arguments. The adapter hands stored code
+    only `tapis_token`, `source_uri` and the arguments the piece declares, so anything else bound in
+    `env_from_args` must be declared. Declared arguments become parameters of each run.
     These checks catch mistakes; they do not vet the code.
   * The piece becomes visible in `list_etl_pieces` after the adapter's next catalog sync, and runs
     only where the adapter has `SVO_ADAPTER_STORED_SOURCE_ENABLED` on.

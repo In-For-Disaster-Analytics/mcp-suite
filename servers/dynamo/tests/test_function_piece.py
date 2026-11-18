@@ -153,3 +153,41 @@ def test_live_write_gates(rsps, settings_over, kwargs, error):
     out = create(tools, dry_run=False, **kwargs)
     assert out["error"] == error
     assert writes(rsps) == []
+
+
+# --- run arguments ----------------------------------------------------------
+
+PARAMS = {"properties": {"output_uri": {"type": "string", "description": "Where to write."},
+                         "match_mode": {"type": "string", "default": "auto"}},
+          "required": ["output_uri"]}
+
+
+def test_declared_arguments_are_stored_as_the_parameter_schema(wt, rsps):
+    known_variables(rsps, "sv-a", "sv-b")
+    out = create(wt, env_from_args={"TAPIS_TOKEN": "tapis_token", "OUTPUT_URI": "output_uri"},
+                 parameters=PARAMS)
+    assert out["valid"] is True
+    assert out["variables"]["object"]["runtime_json"]["parameters_schema_json"] == {
+        "type": "object", "properties": PARAMS["properties"], "required": ["output_uri"]}
+
+
+def test_no_parameters_means_no_schema_is_stored(wt, rsps):
+    known_variables(rsps, "sv-a", "sv-b")
+    out = create(wt, env_from_args={"S": "source_uri"})
+    assert "parameters_schema_json" not in out["variables"]["object"]["runtime_json"]
+
+
+@pytest.mark.parametrize("over,fragment", [
+    ({"env_from_args": {"OUTPUT_URI": "output_uri"}}, "does not declare in parameters: output_uri"),
+    ({"env_from_args": {"OUTPUT_URI": "output_uri"}, "parameters": {"properties": {"other": {}}}},
+     "does not declare in parameters: output_uri"),
+    ({"parameters": {"properties": {"signal_token": {}}}}, "parameters may not declare: signal_token"),
+    ({"parameters": {"properties": {"tapis_token": {}}}}, "parameters may not declare: tapis_token"),
+    ({"parameters": {"properties": {"a": {}}, "required": ["b"]}}, "required names undeclared arguments: b"),
+    ({"parameters": {"properties": {"a": "string"}}}, "must map each argument name to a schema object"),
+])
+def test_argument_declarations_are_checked_before_any_request(wt, rsps, over, fragment):
+    out = create(wt, **over)
+    assert out["error"] == "validation_failed"
+    assert fragment in " ".join(out["errors"])
+    assert len(rsps.calls) == 0
