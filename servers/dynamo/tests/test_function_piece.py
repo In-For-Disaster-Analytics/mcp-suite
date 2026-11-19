@@ -191,3 +191,56 @@ def test_argument_declarations_are_checked_before_any_request(wt, rsps, over, fr
     assert out["error"] == "validation_failed"
     assert fragment in " ".join(out["errors"])
     assert len(rsps.calls) == 0
+
+
+# --- delete -----------------------------------------------------------------
+
+PIECE = {"id": "etl-1", "label": "Double it", "version": "1.0.0", "owner_username": "testuser",
+         "visibility": "private", "runtime_kind": "tapis_function"}
+
+
+def test_delete_dry_run_looks_the_piece_up_and_deletes_nothing(wt, rsps):
+    rsps.post(GRAPHQL, json={"data": {"modelcatalog_etl_process_by_pk": PIECE}})
+    out = wt["delete_etl_function_piece"](process_id="etl-1")
+    assert out["dry_run"] is True and out["found"] is True and out["piece"] == PIECE
+    (call,) = rsps.calls
+    assert "delete_modelcatalog" not in json.loads(call.request.body)["query"]
+
+
+def test_delete_dry_run_reports_a_piece_the_caller_cannot_see(wt, rsps):
+    rsps.post(GRAPHQL, json={"data": {"modelcatalog_etl_process_by_pk": None}})
+    out = wt["delete_etl_function_piece"](process_id="nope")
+    assert out["found"] is False and out["piece"] is None
+
+
+def test_live_delete_sends_one_mutation_as_the_caller(wt, rsps, caplog):
+    rsps.post(GRAPHQL, json={"data": {"delete_modelcatalog_etl_process_by_pk": {
+        "id": "etl-1", "label": "Double it", "owner_username": "testuser"}}})
+    with caplog.at_level(logging.INFO):
+        out = wt["delete_etl_function_piece"](process_id="etl-1", dry_run=False, confirm=True)
+    assert out["ok"] is True and out["status"] == "deleted" and out["process_id"] == "etl-1"
+    (call,) = rsps.calls
+    assert call.request.headers["Authorization"] == f"Bearer {TOKEN}"
+    body = json.loads(call.request.body)
+    assert "delete_modelcatalog_etl_process_by_pk" in body["query"] and body["variables"] == {"id": "etl-1"}
+    assert TOKEN not in caplog.text
+    assert "tool=delete_etl_function_piece" in caplog.text and "status=ok" in caplog.text
+
+
+def test_a_piece_owned_by_someone_else_is_not_deleted(wt, rsps):
+    # Hasura applies the owner filter and answers null, not an error.
+    rsps.post(GRAPHQL, json={"data": {"delete_modelcatalog_etl_process_by_pk": None}})
+    out = wt["delete_etl_function_piece"](process_id="theirs", dry_run=False, confirm=True)
+    assert out["ok"] is False and out["status"] == "not_deleted"
+
+
+@pytest.mark.parametrize("settings_over,kwargs,error", [
+    ({"enable_catalog_writes": True, "tapis_token": TOKEN}, {"confirm": False}, "confirm_required"),
+    ({"enable_catalog_writes": True, "tapis_token": None}, {"confirm": True}, "writes_require_token"),
+    ({"enable_catalog_writes": False, "tapis_token": TOKEN}, {"confirm": True}, "catalog_writes_disabled"),
+])
+def test_live_delete_gates(rsps, settings_over, kwargs, error):
+    tools = build_tools(make_settings(**settings_over))
+    out = tools["delete_etl_function_piece"](process_id="etl-1", dry_run=False, **kwargs)
+    assert out["error"] == error
+    assert rsps.calls == [] or len(rsps.calls) == 0
