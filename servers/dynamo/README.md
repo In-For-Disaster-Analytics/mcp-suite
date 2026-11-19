@@ -53,6 +53,14 @@ never sent a token. Tapis JWTs expire in hours.
 
 ¹ records a readiness row in the adapter (provenance only). ² write: dry-run by default. ³ catalog/registry write: dry-run by default **and** off unless `DYNAMO_ENABLE_CATALOG_WRITES=1`.
 
+### Choosing the pieces of a plan
+
+`create_adapter_plan` searches for the shortest chain unless told otherwise. When two pieces fit the
+same step (for example two ways of turning a corpus into term counts) the search cannot tell them
+apart. Pass `piece_ids`, an ordered list of catalog piece ids, to plan exactly that chain. The adapter
+answers `PIECE_NOT_IN_REGISTRY` for a piece it does not know, cannot show you, or has not synced yet,
+and `PIECE_DOES_NOT_FIT` with the position of the first step that does not fit.
+
 ### What a run needs: run parameters and framing
 
 `create_adapter_plan` returns a stored plan with `run_parameters`, sorted by who supplies each one:

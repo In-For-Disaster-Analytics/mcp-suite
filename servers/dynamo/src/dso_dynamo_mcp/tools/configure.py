@@ -74,11 +74,24 @@ def register(mcp: Any, client: DynamoClient, settings: Settings) -> None:
         target_dataset_specification_id: str | None = None,
         target_model_configuration_id: str | None = None,
         target_contract: dict[str, Any] | None = None,
+        piece_ids: list[str] | None = None,
+        allow_unapproved_piece_ids: list[str] | None = None,
         dry_run: bool = True,
         confirm: bool = False,
         tapis_token: str | None = None,
     ) -> Any:
         """Find and STORE a draft ETL plan that closes the gap between a data object and a target.
+
+        Without piece_ids the adapter searches for the shortest chain. When two pieces fit the
+        same step it cannot tell them apart, so the plan may not be the flow you meant: always
+        read the returned steps. With piece_ids (an ordered list of catalog piece ids, as
+        create_etl_function_piece returned them) it plans exactly that chain, or answers 422
+        PIECE_NOT_IN_REGISTRY (unknown, not visible to you, or not yet synced) or
+        PIECE_DOES_NOT_FIT (with the position of the first step that does not fit).
+
+        allow_unapproved_piece_ids names shared or public pieces whose stored code no admin has
+        approved and that you agree to run with your own Tapis token. Never needed for your own
+        pieces.
 
         The returned plan_id feeds generate_workflow / submit_etl_workflow.
         dry_run=true (default) only echoes the request; dry_run=false + confirm=true stores the plan.
@@ -93,6 +106,8 @@ def register(mcp: Any, client: DynamoClient, settings: Settings) -> None:
             "target_dataset_specification_id": target_dataset_specification_id,
             "target_model_configuration_id": target_model_configuration_id,
             "target_contract": target_contract,
+            "piece_ids": piece_ids,
+            "allow_unapproved_piece_ids": allow_unapproved_piece_ids,
         }
         body = {k: v for k, v in body.items() if v is not None}
         if dry_run:
