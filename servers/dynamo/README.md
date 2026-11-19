@@ -40,13 +40,14 @@ never sent a token. Tapis JWTs expire in hours.
 }
 ```
 
-## Tools (33)
+## Tools (38)
 
 | Group | Tools | Backend |
 |---|---|---|
 | **Search / discover** (read-only) | `search_models`, `search_standard_variables`, `list_models`, `get_model_configuration`, `list_standard_variables`, `find_reachable_variables`, `find_targets_for_source`, `find_sources_for_target`, `find_datasets`, `list_data_objects`, `list_etl_pieces` | semantic-search, catalog, adapter |
 | **Configure** | `check_readiness`¹, `plan_model_run` (preview), `create_adapter_plan`², `create_configuration_setup`³, `update_setup_parameters`³ | adapter, catalog |
 | **Author / register** | `create_standard_variable`³, `create_model`³ (composite), `create_etl_piece`³, `create_etl_function_piece`³, `delete_etl_function_piece`³, `register_data_object`³, `test_etl_piece` | catalog, Hasura, adapter |
+| **Flows** | `list_etl_flows`, `check_etl_flow`, `create_etl_flow`³, `delete_etl_flow`³, `create_flow_plan`² | Hasura, adapter, catalog |
 | **Run — model bridge** | `list_publishers`, `create_run_plan`², `get_plan`, `submit_run_plan`², `create_scenario`² | Ensemble Manager |
 | **Run — adapter ETL-only** | `generate_workflow`², `submit_etl_workflow`² | adapter |
 | **Monitor** | `list_runs`, `get_run_status`, `get_run_provenance`, `cancel_run`² | EM + adapter |
@@ -60,6 +61,29 @@ same step (for example two ways of turning a corpus into term counts) the search
 apart. Pass `piece_ids`, an ordered list of catalog piece ids, to plan exactly that chain. The adapter
 answers `PIECE_NOT_IN_REGISTRY` for a piece it does not know, cannot show you, or has not synced yet,
 and `PIECE_DOES_NOT_FIT` with the position of the first step that does not fit.
+
+### Flows: a graph of pieces, stored as a model
+
+A flow is a model configuration that runs a graph of ETL pieces. It holds no code and grants nothing:
+every piece is still checked for whoever plans and runs it.
+
+1. **Learn the pieces.** `check_etl_flow` with one step and no wires returns that piece's input and
+   output positions, the settings a flow may give it, and the values it returns.
+2. **Check the graph.** `check_etl_flow` with all steps. Steps are numbered from 1 in an order they
+   can run in, and each receives what its `wires` say: an input from a flow input or from an earlier
+   step's output, a setting from a value an earlier step returned, or nothing ("runs after"). Every
+   problem comes back with the step and wire it is on.
+3. **Register it.** `create_etl_flow` writes the family, the version, the configuration and its steps
+   in one request. A flow is public like any model, and so are its steps and settings: never put a
+   credential in a setting.
+4. **Plan it.** `create_flow_plan` with a data object for each input the flow reads.
+5. **Run it.** `submit_etl_workflow`. The pieces run with the runner's token and the flow's author
+   chose its settings, so the adapter refuses the run until the runner passes
+   `accept_flow_settings=true` or their own values. `create_flow_plan` returns those settings under
+   `flow_settings`; show them to the user first.
+
+A piece that runs as a Tapis app can be a step: its outputs are found in the job's archive by the
+file name the piece declared.
 
 ### What a run needs: run parameters and framing
 

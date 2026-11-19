@@ -9,7 +9,7 @@ import responses as resp_lib
 
 from dso_dynamo_mcp.client import DynamoClient
 from dso_dynamo_mcp.config import Settings
-from dso_dynamo_mcp.tools import author, configure, monitor, run, search
+from dso_dynamo_mcp.tools import author, configure, flows, monitor, run, search
 
 API = "http://api.test/v2.0.0"
 EM = "http://em.test/v1"
@@ -43,7 +43,7 @@ def make_settings(**over: Any) -> Settings:
 def build_tools(settings: Settings) -> dict[str, Callable[..., Any]]:
     mcp = FakeMCP()
     client = DynamoClient(settings)
-    for mod in (search, configure, author, run, monitor):
+    for mod in (search, configure, author, flows, run, monitor):
         mod.register(mcp, client, settings)
     return mcp.tools
 

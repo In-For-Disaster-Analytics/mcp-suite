@@ -202,6 +202,7 @@ def register(mcp: Any, client: DynamoClient, settings: Settings) -> None:
         recreate: bool = False,
         idempotency_key: str | None = None,
         adapter_dry_run: bool = False,
+        accept_flow_settings: bool = False,
         dry_run: bool = True,
         confirm: bool = False,
         tapis_token: str | None = None,
@@ -218,10 +219,18 @@ def register(mcp: Any, client: DynamoClient, settings: Settings) -> None:
         idempotency_key); reuse it when retrying. adapter_dry_run=true registers/generates
         without triggering a run — it still REGISTERS the pipeline in Tapis, so it is not a
         pure preview. The tool's own dry_run=true is a pure echo.
+
+        For a plan made from a flow (create_flow_plan): the flow's author chose default
+        settings, and may have linked settings from earlier steps, for pieces that run with
+        YOUR token. The adapter answers FLOW_SETTINGS_NOT_ACCEPTED, listing them, until you
+        send accept_flow_settings=true or pass your own value for each default. Show them to
+        the user before accepting.
         """
         key = idempotency_key or f"dso-dynamo-{uuid.uuid4()}"
         body = {"plan_id": plan_id, "args": args or {}, "run_name": run_name,
                 "recreate": recreate, "dry_run": adapter_dry_run}
+        if accept_flow_settings:
+            body["accept_flow_settings"] = True
         body = {k: v for k, v in body.items() if v is not None}
         if dry_run:
             return {"dry_run": True, "would_request": "POST /workflows/submit", "body": body,

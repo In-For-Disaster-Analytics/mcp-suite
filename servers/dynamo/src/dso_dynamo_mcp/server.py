@@ -21,7 +21,7 @@ import fastmcp
 
 from .client import DynamoClient
 from .config import settings
-from .tools import author, configure, monitor, run, search
+from .tools import author, configure, flows, monitor, run, search
 
 logging.basicConfig(
     stream=sys.stderr,  # stdout is the MCP protocol stream
@@ -64,6 +64,7 @@ _client = DynamoClient(settings)
 search.register(mcp, _client, settings)
 configure.register(mcp, _client, settings)
 author.register(mcp, _client, settings)
+flows.register(mcp, _client, settings)
 run.register(mcp, _client, settings)
 monitor.register(mcp, _client, settings)
 
