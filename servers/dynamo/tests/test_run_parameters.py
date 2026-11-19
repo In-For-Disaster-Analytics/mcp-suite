@@ -46,3 +46,24 @@ def test_an_already_ready_object_has_no_plan_and_no_run_parameters(rsps):
     rsps.post(f"{SVO}/plans", json={"status": "ready", "plan": None})
     out = tools["create_adapter_plan"]("do1", dry_run=False, confirm=True)
     assert out == {"status": "ready", "plan": None}
+
+
+def test_named_pieces_are_sent_in_order_and_left_out_when_not_given(rsps):
+    import json
+    tools = build_tools(make_settings(tapis_token=TOKEN))
+    rsps.post(f"{SVO}/plans", json={"status": "transform_required", "plan_id": "plan-2", "plan_json": PLAN})
+    rsps.post(f"{SVO}/plans", json={"status": "transform_required", "plan_id": "plan-3", "plan_json": PLAN})
+    tools["create_adapter_plan"]("do1", target_contract={"standard_variable_uri": "x"}, piece_ids=["b", "a"],
+                                 allow_unapproved_piece_ids=["a"], dry_run=False, confirm=True)
+    tools["create_adapter_plan"]("do1", target_contract={"standard_variable_uri": "x"}, dry_run=False, confirm=True)
+    named, searched = (json.loads(call.request.body) for call in rsps.calls)
+    assert named["piece_ids"] == ["b", "a"] and named["allow_unapproved_piece_ids"] == ["a"]
+    assert "piece_ids" not in searched and "allow_unapproved_piece_ids" not in searched
+
+
+def test_a_chain_that_does_not_fit_comes_back_verbatim(rsps):
+    tools = build_tools(make_settings(tapis_token=TOKEN))
+    rsps.post(f"{SVO}/plans", status=422, json={"detail": {"code": "PIECE_DOES_NOT_FIT", "position": 1, "piece_id": "a"}})
+    out = tools["create_adapter_plan"]("do1", piece_ids=["b", "a"], dry_run=False, confirm=True)
+    assert out["error"] == "backend_error" and out["status"] == 422
+    assert out["body"]["detail"] == {"code": "PIECE_DOES_NOT_FIT", "position": 1, "piece_id": "a"}
