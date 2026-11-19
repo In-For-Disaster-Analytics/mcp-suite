@@ -90,3 +90,35 @@ def write_gate(
             ),
         }
     return None
+
+
+def run_parameters(plan_json: Any) -> dict[str, Any]:
+    """Sort a stored adapter plan's parameters by who supplies them.
+
+    ``must_supply``          a run fails without these
+    ``optional``             a piece's own settings that have a default or may be left out
+    ``framing``              what the run is about (time period, area): required only when
+                             ``used_by_plan``; recorded with the run when given
+    ``supplied_by_adapter``  filled in by the service; do not pass them
+    """
+    groups: dict[str, list[Any]] = {
+        "must_supply": [], "optional": [], "framing": [], "supplied_by_adapter": []}
+    parameters = plan_json.get("parameters") if isinstance(plan_json, dict) else None
+    for item in parameters or []:
+        if not isinstance(item, dict) or not item.get("name"):
+            continue
+        entry = {key: item[key] for key in ("name", "type", "description", "default", "allowed_values")
+                 if item.get(key) is not None}
+        if item.get("managed"):
+            groups["supplied_by_adapter"].append(item["name"])
+        elif item.get("framing"):
+            groups["framing"].append({**entry, "framing": item["framing"],
+                                      "required": bool(item.get("required")),
+                                      "used_by_plan": bool(item.get("used_by_plan"))})
+            if item.get("required"):
+                groups["must_supply"].append(entry)
+        elif item.get("required"):
+            groups["must_supply"].append(entry)
+        else:
+            groups["optional"].append(entry)
+    return groups

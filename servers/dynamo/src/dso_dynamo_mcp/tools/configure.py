@@ -21,7 +21,7 @@ from .. import audit
 from ..client import DynamoAPIError, DynamoClient, enc
 from ..config import Settings
 from . import _catalog as cat
-from ._common import backend_error, bound, run, write_gate
+from ._common import backend_error, bound, run, run_parameters, write_gate
 
 
 def register(mcp: Any, client: DynamoClient, settings: Settings) -> None:
@@ -82,6 +82,11 @@ def register(mcp: Any, client: DynamoClient, settings: Settings) -> None:
 
         The returned plan_id feeds generate_workflow / submit_etl_workflow.
         dry_run=true (default) only echoes the request; dry_run=false + confirm=true stores the plan.
+
+        A stored plan comes back with `run_parameters`, which says what a run of it needs:
+        `must_supply` (pass these as submit_etl_workflow args), `optional`, `framing` (the time
+        period and area the run is about: required only when `used_by_plan`, and recorded with
+        the run when given) and `supplied_by_adapter` (never pass these).
         """
         body = {
             "data_object_id": data_object_id,
@@ -104,6 +109,8 @@ def register(mcp: Any, client: DynamoClient, settings: Settings) -> None:
             return backend_error(exc)
         audit.log_write("create_adapter_plan", {"data_object_id": data_object_id}, "svo", 200,
                         result.get("plan_id") if isinstance(result, dict) else None)
+        if isinstance(result, dict) and isinstance(result.get("plan_json"), dict):
+            result = {**result, "run_parameters": run_parameters(result["plan_json"])}
         return result
 
     @mcp.tool()

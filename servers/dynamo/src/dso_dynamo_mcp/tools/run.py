@@ -209,7 +209,10 @@ def register(mcp: Any, client: DynamoClient, settings: Settings) -> None:
         """Register the pipeline in Tapis Workflows and RUN an ETL-only adapter plan.
 
         For model + ETL composite runs use create_run_plan / submit_run_plan (EM-owned).
-        args are run arguments ({"start_date": "..."} or {"start_date": {"value": "..."}}).
+        args are run arguments ({"output_uri": "..."} or {"output_uri": {"value": "..."}}).
+        Pass what create_adapter_plan listed under run_parameters.must_supply. Framing arguments
+        (start_date, end_date, aoi_geojson_uri, lat, lon) may be added to say what the run is
+        about; they are recorded with the run even when no piece reads them.
         recreate=true deletes + recreates the pipeline so task changes re-sync. An
         Idempotency-Key is sent (generated if you give none and returned as
         idempotency_key); reuse it when retrying. adapter_dry_run=true registers/generates

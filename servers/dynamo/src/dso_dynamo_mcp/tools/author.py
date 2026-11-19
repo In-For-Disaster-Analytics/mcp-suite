@@ -41,6 +41,8 @@ MAX_SOURCE_BYTES = 64_000
 REFUSED_ARGS = frozenset({
     "credentials_url", "signal_url", "signal_token", "signal_expires", "token_url",
     "token_fetch_token", "token_fetch_expires", "ckan_token", "stac_token"})
+# Arguments stored code may always be handed, without declaring them.
+ALWAYS_BINDABLE = frozenset({"tapis_token", "source_uri"})
 CONTRACT_FIELDS = ("standard_variable_uri", "unit", "format", "dimensionality", "spatial_type",
                    "crs_requirement", "temporal_resolution")
 CREATE_ETL_PROCESS = """
@@ -455,6 +457,7 @@ def register(mcp: Any, client: DynamoClient, settings: Settings) -> None:
         python_source: str,
         entrypoint: str | None = "transform",
         env_from_args: dict[str, str] | None = None,
+        parameters: dict[str, Any] | None = None,
         version: str = "1.0.0",
         process_id: str | None = None,
         dry_run: bool = True,
@@ -481,6 +484,13 @@ def register(mcp: Any, client: DynamoClient, settings: Settings) -> None:
                           "tapis_token" and "source_uri" are allowed; run-signal, token-fetch,
                           CKAN and STAC credentials are refused. A step that follows another
                           function step also receives its result as SOURCE_RESULT.
+        parameters:       JSON Schema for the piece's own run arguments:
+                          {"properties": {name: {"type", "description", "default"?}},
+                           "required": [name, ...]}. Every argument bound in env_from_args,
+                          other than tapis_token and source_uri, MUST be declared here: the
+                          adapter refuses to hand stored code an argument the piece did not
+                          declare. Declared arguments become parameters of every run that
+                          uses the piece; give optional ones a default.
         process_id:       defaults to a slug of the label plus a random suffix. The dry run
                           returns the id it would use; pass it back to keep it.
 
@@ -503,6 +513,24 @@ def register(mcp: Any, client: DynamoClient, settings: Settings) -> None:
         refused = sorted(set((env_from_args or {}).values()) & REFUSED_ARGS)
         if refused:
             errors.append(f"env_from_args may not bind: {', '.join(refused)}")
+        properties = (parameters or {}).get("properties") or {}
+        if parameters is not None and (
+                not isinstance(properties, dict)
+                or not all(isinstance(v, dict) for v in properties.values())):
+            errors.append("parameters.properties must map each argument name to a schema object")
+            properties = {}
+        refused = sorted(set(properties) & (REFUSED_ARGS | ALWAYS_BINDABLE))
+        if refused:
+            errors.append(f"parameters may not declare: {', '.join(refused)}")
+        undeclared = sorted(set((env_from_args or {}).values())
+                            - set(properties) - ALWAYS_BINDABLE - REFUSED_ARGS)
+        if undeclared:
+            errors.append(
+                "env_from_args binds arguments the piece does not declare in parameters: "
+                + ", ".join(undeclared))
+        missing = sorted(set((parameters or {}).get("required") or []) - set(properties))
+        if missing:
+            errors.append(f"parameters.required names undeclared arguments: {', '.join(missing)}")
         if not errors:
             for uri in sorted({c["standard_variable_uri"] for c in contracts}):
                 try:
@@ -524,6 +552,11 @@ def register(mcp: Any, client: DynamoClient, settings: Settings) -> None:
             runtime_json["entrypoint"] = entrypoint
         if env_from_args:
             runtime_json["env_from_args"] = env_from_args
+        if properties:
+            runtime_json["parameters_schema_json"] = {
+                "type": "object", "properties": properties,
+                "required": list((parameters or {}).get("required") or []),
+            }
         variables = {"object": {
             "id": pid, "label": label, "description": description, "version": version,
             "visibility": "private", "runtime_kind": "tapis_function", "runtime_json": runtime_json,
