@@ -14,7 +14,7 @@ Design spec: [`../../docs/design/2026-11-18-dynamo-mcp-server.md`](../../docs/de
 | mint-ensemble-manager | `DYNAMO_EM_URL` (+ `DYNAMO_EM_PREFIX=/v1`) | `https://mintdevensemble.pods.portals.tapis.io` | **model-bridge runs** (`/v1/plans`) |
 | svo-adapter | `DYNAMO_SVO_URL` | `https://mintdevsvo.pods.portals.tapis.io` | SVO discovery, readiness, ETL plans/workflows, run provenance |
 | semantic-search | `DYNAMO_SEMANTIC_URL` | `https://mintdevsemanticsearch.pods.portals.tapis.io` | `search_models`, `search_standard_variables` |
-| Hasura GraphQL | `DYNAMO_HASURA_URL` | `https://mintdevgraphql.pods.portals.tapis.io` | `create_etl_function_piece` only (the catalog REST API has no route for ETL processes) |
+| Hasura GraphQL | `DYNAMO_HASURA_URL` | `https://mintdevgraphql.pods.portals.tapis.io` | `create_etl_function_piece` and `delete_etl_function_piece` (the catalog REST API has no route for ETL processes) |
 
 Other settings: `DYNAMO_TAPIS_TOKEN` (fallback JWT), `DYNAMO_ENABLE_CATALOG_WRITES` (default off),
 `DYNAMO_HTTP_TIMEOUT` (60 s), `DYNAMO_MAX_RESPONSE_CHARS` (200000). A `.env` in this directory is read.
@@ -46,7 +46,7 @@ never sent a token. Tapis JWTs expire in hours.
 |---|---|---|
 | **Search / discover** (read-only) | `search_models`, `search_standard_variables`, `list_models`, `get_model_configuration`, `list_standard_variables`, `find_reachable_variables`, `find_targets_for_source`, `find_sources_for_target`, `find_datasets`, `list_data_objects`, `list_etl_pieces` | semantic-search, catalog, adapter |
 | **Configure** | `check_readiness`¹, `plan_model_run` (preview), `create_adapter_plan`², `create_configuration_setup`³, `update_setup_parameters`³ | adapter, catalog |
-| **Author / register** | `create_standard_variable`³, `create_model`³ (composite), `create_etl_piece`³, `create_etl_function_piece`³, `register_data_object`³, `test_etl_piece` | catalog, Hasura, adapter |
+| **Author / register** | `create_standard_variable`³, `create_model`³ (composite), `create_etl_piece`³, `create_etl_function_piece`³, `delete_etl_function_piece`³, `register_data_object`³, `test_etl_piece` | catalog, Hasura, adapter |
 | **Run — model bridge** | `list_publishers`, `create_run_plan`², `get_plan`, `submit_run_plan`², `create_scenario`² | Ensemble Manager |
 | **Run — adapter ETL-only** | `generate_workflow`², `submit_etl_workflow`² | adapter |
 | **Monitor** | `list_runs`, `get_run_status`, `get_run_provenance`, `cancel_run`² | EM + adapter |
@@ -104,8 +104,15 @@ Prefer `tapis_function` unless the piece needs HPC resources.
     These checks catch mistakes; they do not vet the code.
   * The piece becomes visible in `list_etl_pieces` after the adapter's next catalog sync, and runs
     only where the adapter has `SVO_ADAPTER_STORED_SOURCE_ENABLED` on.
-  * Insert-only. The default id carries a random suffix; pass the dry run's `process_id` back to
-    keep it.
+  * There is no update. The default id carries a random suffix; pass the dry run's `process_id`
+    back to keep it.
+* `delete_etl_function_piece` deletes a catalog ETL piece **the caller owns**; the catalog enforces
+  ownership with the caller's token, and the piece's contracts go with it. It cannot be undone.
+  * The dry run looks the piece up and sends no write.
+  * To change a piece, register the new version under a new id and delete the old one. Two pieces
+    with the same inputs and outputs compete in planning.
+  * The adapter keeps its copy until its next catalog sync. After that, a stored plan that uses
+    the piece is refused at submit.
 * Built-in `tapis_function` pieces (the adapter's own transform types) are registered by the
   adapter's `scripts/register_existing_etl_pieces.py`, not by this server.
 * Long-running services and human review steps are not ETL pieces.
@@ -118,8 +125,8 @@ Prefer `tapis_function` unless the piece needs HPC resources.
 * Catalog/registry writes additionally need `DYNAMO_ENABLE_CATALOG_WRITES=1`. The catalog's Hasura role
   permissions are the only server-side guard for *who may change what*; `update_setup_parameters` adds a
   client-side check that each parameter belongs to the named setup.
-* Authoring is **not atomic** (several REST calls). On failure the result lists what was created; v1 has
-  **no delete tools**. POSTs are idempotent (existing rows are reported as `exists`).
+* Authoring is **not atomic** (several REST calls). On failure the result lists what was created; the only
+  delete tool is `delete_etl_function_piece`. POSTs are idempotent (existing rows are reported as `exists`).
 * Backend errors come back **verbatim** (`status`, `service`, `body`), e.g. `INPUT_PLAN_CHANGED`,
   `NO_INPUT_TRANSFORM_PATH`, `DEFERRED_EXECUTION_ID_MISMATCH`, `RUN_CANCEL_FORBIDDEN`.
 * Live writes are audited to stderr (`AUDIT tool=… target=… status=…`, argument *names* only).

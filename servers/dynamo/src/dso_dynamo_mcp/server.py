@@ -45,6 +45,8 @@ INSTRUCTIONS = (
     "needs an allocation, so keep it for heavy work (models, GPU, large memory, long runtimes). "
     "create_etl_function_piece authors a `tapis_function` piece from Python source: private, owned "
     "by the caller, and runnable only where the adapter has stored-source execution enabled. "
+    "A piece cannot be edited: register the new version under a new id and remove the old one "
+    "with delete_etl_function_piece (owner only), or the planner chooses between the two. "
     "create_etl_piece authors a `tapis_job` piece and the Tapis app must already be registered (no "
     "tool here registers Tapis apps). Long-running services and human review steps are not ETL "
     "pieces. "

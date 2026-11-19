@@ -1,20 +1,21 @@
 """
 Author / register tools — create SVOs, models, ETL pieces and data objects.
 
-Tools registered here (6)
+Tools registered here (7)
 -------------------------
   create_standard_variable  catalog  POST /standardvariables
   create_model              catalog  composite: Model -> SoftwareVersion -> DatasetSpecifications
                                      -> ModelConfiguration (+FK/junction PUTs)
   create_etl_piece          catalog  same composite, for an ETL piece (a ModelConfiguration bound to a Tapis app)
   create_etl_function_piece hasura   insert_modelcatalog_etl_process_one (Python source, no Tapis app)
+  delete_etl_function_piece hasura   delete_modelcatalog_etl_process_by_pk (the caller's own piece only)
   register_data_object      adapter  POST /data-objects
   test_etl_piece            adapter  POST /transform-specs/{id}/test (adapter dry-run by default)
 
 Gates: dry-run by default; live needs confirm=true; the catalog/registry tools
 also need DYNAMO_ENABLE_CATALOG_WRITES=1. Writes are NOT atomic (several REST
-calls) and v1 has no delete tools: on a partial failure the tool reports exactly
-what was created.
+calls) and the only delete tool is delete_etl_function_piece: on a partial failure
+the tool reports exactly what was created.
 
 KNOWN LIMITATION (verified in register_to_mint.py): the REST API cannot link a
 VariablePresentation to a StandardVariable/Unit on create. The tools create the
@@ -48,6 +49,17 @@ CONTRACT_FIELDS = ("standard_variable_uri", "unit", "format", "dimensionality", 
 CREATE_ETL_PROCESS = """
 mutation CreateETL($object: modelcatalog_etl_process_insert_input!) {
   insert_modelcatalog_etl_process_one(object: $object) { id label owner_username visibility }
+}
+"""
+
+GET_ETL_PROCESS = """
+query GetETL($id: String!) {
+  modelcatalog_etl_process_by_pk(id: $id) { id label version owner_username visibility runtime_kind }
+}
+"""
+DELETE_ETL_PROCESS = """
+mutation DeleteETL($id: String!) {
+  delete_modelcatalog_etl_process_by_pk(id: $id) { id label owner_username }
 }
 """
 
@@ -496,7 +508,9 @@ def register(mcp: Any, client: DynamoClient, settings: Settings) -> None:
 
         After a live create the piece appears in list_etl_pieces once the adapter next syncs
         the catalog, and runs only where the adapter has stored-source execution enabled.
-        Insert-only: there is no update or delete; an existing id is reported as `exists`.
+        There is no update; an existing id is reported as `exists`. To change a piece,
+        register the new version under a new id and remove the old one with
+        delete_etl_function_piece, or the planner will choose between the two.
         """
         errors, warnings = _check_source(python_source, entrypoint)
         contracts: list[dict[str, Any]] = []
@@ -589,6 +603,62 @@ def register(mcp: Any, client: DynamoClient, settings: Settings) -> None:
                 "visibility": created.get("visibility"), "warnings": warnings,
                 "next": "The adapter picks the piece up on its next catalog sync; then find it "
                         "with list_etl_pieces and try it with test_etl_piece."}
+
+    # ------------------------------------------- delete function ETL piece
+    @mcp.tool()
+    def delete_etl_function_piece(
+        process_id: str,
+        dry_run: bool = True,
+        confirm: bool = False,
+        tapis_token: str | None = None,
+    ) -> Any:
+        """Delete a catalog ETL piece the caller owns. This cannot be undone.
+
+        Only the piece's owner can delete it (the catalog enforces this with the caller's
+        token); its contracts are deleted with it. Use it to retire a superseded version, so
+        the planner does not choose between two pieces with the same inputs and outputs.
+
+        dry_run=true (default) looks the piece up and reports what would be deleted, sending
+        no write. dry_run=false + confirm=true deletes (and needs the server catalog-write flag).
+
+        After a delete:
+        * the adapter keeps its copy until its next catalog sync, so the piece can still be
+          planned and run until then;
+        * a stored plan that uses the piece is refused at submit once the adapter has synced;
+        * registering a piece under the same id again starts it private and unapproved.
+        """
+        if dry_run:
+            try:
+                data = client.graphql(GET_ETL_PROCESS, {"id": process_id}, token=tapis_token)
+            except DynamoAPIError as exc:
+                return backend_error(exc)
+            found = (data or {}).get("modelcatalog_etl_process_by_pk")
+            return {"dry_run": True, "process_id": process_id, "found": bool(found), "piece": found,
+                    "would_request": "POST /v1/graphql (delete_modelcatalog_etl_process_by_pk)",
+                    "live_writes_enabled": settings.enable_catalog_writes,
+                    "note": "Nothing sent. The catalog deletes the piece only if the caller owns "
+                            "it; `found` only says the caller can see it."}
+        blocked = write_gate(settings, "delete_etl_function_piece",
+                             client.effective_token(tapis_token), confirm=confirm, catalog=True)
+        if blocked:
+            return blocked
+        try:
+            data = client.graphql(DELETE_ETL_PROCESS, {"id": process_id}, token=tapis_token)
+        except DynamoAPIError as exc:
+            audit.log_write("delete_etl_function_piece", {"process_id": process_id}, "hasura", "error",
+                            process_id)
+            return backend_error(exc)
+        deleted = (data or {}).get("delete_modelcatalog_etl_process_by_pk")
+        if not deleted:
+            audit.log_write("delete_etl_function_piece", {"process_id": process_id}, "hasura",
+                            "not_deleted", process_id)
+            return {"ok": False, "status": "not_deleted", "process_id": process_id,
+                    "note": "Nothing was deleted: there is no piece with this id, or the caller "
+                            "does not own it."}
+        audit.log_write("delete_etl_function_piece", {"process_id": process_id}, "hasura", "ok", process_id)
+        return {"ok": True, "status": "deleted", "process_id": deleted.get("id") or process_id,
+                "label": deleted.get("label"), "owner_username": deleted.get("owner_username"),
+                "next": "The adapter drops the piece on its next catalog sync."}
 
     # ------------------------------------------------------------- test piece
     @mcp.tool()
