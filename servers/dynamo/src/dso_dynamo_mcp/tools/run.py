@@ -6,8 +6,9 @@ Ensemble Manager, so the bridge path goes through EM):
 
   Model bridge (model + ETL pieces, composite)   Ensemble Manager  /v1/plans
       list_publishers, create_run_plan, get_plan, submit_run_plan, create_scenario
-  Adapter ETL-only workflows                      svo-adapter
-      generate_workflow, submit_etl_workflow
+  Adapter ETL-only workflows                      Ensemble Manager  /v1/plans/submit
+      submit_etl_workflow  (an `svo_` plan runs through the EM, which calls the adapter)
+      generate_workflow    EM forward: POST /v1/adapter/workflows/generate
 
 Every write tool is dry-run by default (the dry run is a pure echo — NO request is
 sent), needs ``confirm=true`` to go live, and is audited. No tool here accepts a
@@ -23,6 +24,15 @@ from .. import audit
 from ..client import DynamoAPIError, DynamoClient, enc
 from ..config import Settings
 from ._common import backend_error, bound, run, write_gate
+
+
+def _adapter_plan_id(plan_id: str) -> str:
+    """The EM names an adapter plan ``svo_<id>``; the adapter's own routes take ``<id>``."""
+    return plan_id[len("svo_"):] if plan_id.startswith("svo_") else plan_id
+
+
+def _em_plan_id(plan_id: str) -> str:
+    return plan_id if plan_id.startswith("svo_") else f"svo_{plan_id}"
 
 
 def register(mcp: Any, client: DynamoClient, settings: Settings) -> None:
@@ -187,11 +197,13 @@ def register(mcp: Any, client: DynamoClient, settings: Settings) -> None:
         """Generate (and persist onto the plan) the Tapis Workflows definition for an adapter plan.
 
         Does not register or run anything on Tapis. dry_run=true (default) only echoes the request.
+        Goes through the EM's adapter forward (POST /v1/adapter/workflows/generate).
         """
+        plan_id = _adapter_plan_id(plan_id)
         body = {"plan_id": plan_id}
         if dry_run:
             return {"dry_run": True, "would_request": "POST /workflows/generate", "body": body}
-        return _live("generate_workflow", "svo", "/workflows/generate", body, tapis_token, confirm,
+        return _live("generate_workflow", "adapter", "/workflows/generate", body, tapis_token, confirm,
                      {"plan_id": plan_id})
 
     @mcp.tool()
@@ -208,6 +220,9 @@ def register(mcp: Any, client: DynamoClient, settings: Settings) -> None:
         tapis_token: str | None = None,
     ) -> Any:
         """Register the pipeline in Tapis Workflows and RUN an ETL-only adapter plan.
+
+        Goes through the EM (POST /v1/plans/submit with the plan's `svo_` id), which calls the
+        adapter with your token.
 
         For model + ETL composite runs use create_run_plan / submit_run_plan (EM-owned).
         args are run arguments ({"output_uri": "..."} or {"output_uri": {"value": "..."}}).
@@ -227,16 +242,17 @@ def register(mcp: Any, client: DynamoClient, settings: Settings) -> None:
         the user before accepting.
         """
         key = idempotency_key or f"dso-dynamo-{uuid.uuid4()}"
-        body = {"plan_id": plan_id, "args": args or {}, "run_name": run_name,
-                "recreate": recreate, "dry_run": adapter_dry_run}
+        # The EM reads the run arguments from `parameter_values` and the key from the body.
+        body = {"plan_id": _em_plan_id(plan_id), "parameter_values": args or {}, "run_name": run_name,
+                "recreate": recreate, "dry_run": adapter_dry_run, "idempotency_key": key}
         if accept_flow_settings:
             body["accept_flow_settings"] = True
         body = {k: v for k, v in body.items() if v is not None}
         if dry_run:
-            return {"dry_run": True, "would_request": "POST /workflows/submit", "body": body,
+            return {"dry_run": True, "would_request": "POST /v1/plans/submit", "body": body,
                     "idempotency_key": key,
                     "note": "Nothing sent. dry_run=false + confirm=true registers and runs the pipeline."}
-        result = _live("submit_etl_workflow", "svo", "/workflows/submit", body, tapis_token, confirm,
+        result = _live("submit_etl_workflow", "em", "/plans/submit", body, tapis_token, confirm,
                        {"plan_id": plan_id}, headers={"Idempotency-Key": key})
         if isinstance(result, dict) and "error" not in result:
             result.setdefault("idempotency_key", key)

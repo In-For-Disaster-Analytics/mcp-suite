@@ -3,7 +3,9 @@ HTTP client for the four DYNAMO backends.
 
   api       model-catalog-api            ``{api_url}/v2.0.0``
   em        mint-ensemble-manager        ``{em_url}/v1``
-  svo       svo-adapter-service          ``{svo_url}``
+  adapter   svo-adapter-service, THROUGH the EM  ``{em_url}/v1/adapter``  (the adapter is an
+            internal engine; the EM forwards an allowlist of its user routes with the caller's
+            token. No tool calls the adapter host.)
   semantic  semantic-search-service      ``{semantic_url}``
   hasura    Hasura GraphQL (catalog)     ``{hasura_url}/v1/graphql``
 
@@ -71,7 +73,7 @@ class DynamoClient:
         return {
             "api": s.api_url + s.api_prefix,
             "em": s.em_url + s.em_prefix,
-            "svo": s.svo_url,
+            "adapter": s.em_url + s.em_prefix + "/adapter",
             "semantic": s.semantic_url,
             "hasura": s.hasura_url,
         }[service]

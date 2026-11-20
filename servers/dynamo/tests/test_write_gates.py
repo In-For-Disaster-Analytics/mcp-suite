@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from conftest import API, EM, SVO, TOKEN, build_tools, make_settings, writes
+from conftest import API, EM, TOKEN, build_tools, make_settings, writes
 
 IO_IN = [{"label": "Precip", "format": "tif"}]
 IO_OUT = [{"label": "Result", "format": "tif", "archived_file": "*.tif"}]
@@ -112,7 +112,7 @@ def test_live_write_never_logs_the_token(rsps, caplog):
     import logging
     caplog.set_level(logging.INFO)
     t = build_tools(make_settings())
-    rsps.post(f"{SVO}/workflows/generate", json={"plan_id": "p"})
+    rsps.post(f"{EM}/adapter/workflows/generate", json={"plan_id": "p"})
     t["generate_workflow"]("p", dry_run=False, confirm=True, tapis_token=TOKEN)
     assert "AUDIT tool=generate_workflow" in caplog.text
     assert TOKEN not in caplog.text

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from urllib.parse import parse_qs, urlparse
 
-from conftest import API, SEM, SVO, TOKEN
+from conftest import API, EM, SEM, TOKEN
 
 
 def test_search_models_maps_to_semantic_search(tools, rsps):
@@ -29,24 +29,24 @@ def test_get_model_configuration_percent_encodes_the_url_id(tools, rsps):
 
 
 def test_401_is_passed_through_verbatim(tools, rsps):
-    rsps.get(f"{SVO}/standard-variables", status=401,
+    rsps.get(f"{EM}/adapter/standard-variables", status=401,
              json={"message": "Missing or invalid Authorization header"})
     out = tools["list_standard_variables"](tapis_token=TOKEN)
     assert out["error"] == "backend_error" and out["status"] == 401
-    assert out["service"] == "svo"
+    assert out["service"] == "adapter"
     assert out["body"]["message"].startswith("Missing")
     assert TOKEN not in json.dumps(out)
 
 
 def test_adapter_error_codes_pass_through(tools, rsps):
-    rsps.post(f"{SVO}/plans/discover-sources", status=422,
+    rsps.post(f"{EM}/adapter/plans/discover-sources", status=422,
               json={"detail": {"code": "NO_PATH", "message": "none"}})
     out = tools["find_sources_for_target"](standard_variable_uri="u")
     assert out["status"] == 422 and out["body"]["detail"]["code"] == "NO_PATH"
 
 
 def test_find_datasets_body_shape(tools, rsps):
-    rsps.post(f"{SVO}/datasets/find", json={"datasets": []})
+    rsps.post(f"{EM}/adapter/datasets/find", json={"datasets": []})
     tools["find_datasets"](["precipitation"], start_time_gte="2020-01-01", limit=10)
     body = json.loads(rsps.calls[0].request.body)
     assert body == {"standard_variable_names__in": ["precipitation"], "limit": 10,
@@ -56,6 +56,6 @@ def test_find_datasets_body_shape(tools, rsps):
 def test_large_results_are_bounded(rsps):
     from conftest import build_tools, make_settings
     t = build_tools(make_settings(max_response_chars=100))
-    rsps.get(f"{SVO}/data-objects", json=[{"label": "x" * 50}] * 20)
+    rsps.get(f"{EM}/adapter/data-objects", json=[{"label": "x" * 50}] * 20)
     out = t["list_data_objects"]()
     assert out["truncated"] is True and out["total_chars"] > 100

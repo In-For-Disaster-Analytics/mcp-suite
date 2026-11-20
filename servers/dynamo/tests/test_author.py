@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from conftest import API, SVO, TOKEN, build_tools, make_settings, writes
+from conftest import API, EM, TOKEN, build_tools, make_settings, writes
 
 IO_IN = [{"label": "Precip", "format": "tif", "is_optional": False, "app_input_name": "precip"}]
 IO_OUT = [{"label": "Result", "format": "tif", "archived_file": "*.tif"}]
@@ -125,7 +125,7 @@ def test_create_standard_variable_live(wt, rsps):
 
 
 def test_register_data_object_live_posts_to_adapter(wt, rsps):
-    rsps.post(f"{SVO}/data-objects", json={"id": "do-1", "label": "L"})
+    rsps.post(f"{EM}/adapter/data-objects", json={"id": "do-1", "label": "L"})
     out = wt["register_data_object"]("L", "https://x/y.tif", variables=[{"standard_variable_uri": "u"}],
                                      format="tif", dry_run=False, confirm=True)
     assert out["id"] == "do-1"
@@ -142,7 +142,7 @@ def test_register_data_object_cannot_set_server_owned_fields(wt):
 
 def test_test_etl_piece_default_is_adapter_generate_only(rsps):
     t = build_tools(make_settings())
-    rsps.post(f"{SVO}/transform-specs/spec1/test", json={"status": "generated"})
+    rsps.post(f"{EM}/adapter/transform-specs/spec1/test", json={"status": "generated"})
     out = t["test_etl_piece"]("spec1", args={"a": 1})
     assert out["status"] == "generated"
     assert json.loads(rsps.calls[0].request.body)["dry_run"] is True
@@ -191,8 +191,8 @@ def test_unresolvable_parent_configuration_is_reported(wt, rsps):
 
 def test_check_readiness_and_plan_preview(rsps):
     t = build_tools(make_settings())
-    rsps.post(f"{SVO}/readiness/check", json={"status": "transform_required", "dimensions": []})
-    rsps.post(f"{SVO}/plans/model-run", json={"complete": True, "branches": [], "plan_json": {}})
+    rsps.post(f"{EM}/adapter/readiness/check", json={"status": "transform_required", "dimensions": []})
+    rsps.post(f"{EM}/adapter/plans/model-run", json={"complete": True, "branches": [], "plan_json": {}})
     assert t["check_readiness"]("do1", target_contract={"unit": "m"})["status"] == "transform_required"
     assert json.loads(rsps.calls[0].request.body) == {"data_object_id": "do1",
                                                       "target_contract": {"unit": "m"}}
