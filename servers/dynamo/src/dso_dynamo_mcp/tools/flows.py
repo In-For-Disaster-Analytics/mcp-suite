@@ -7,15 +7,14 @@ or nothing ("runs after"). A flow holds no code and grants nothing: every piece 
 still checked for whoever plans and runs it.
 
   list_etl_flows     hasura              modelcatalog_configuration with a flow (as the caller)
-  check_etl_flow     svo-adapter         POST /flows/check           (read-only; adapter-direct)
+  check_etl_flow     EM forward          POST /v1/adapter/flows/check  (read-only)
   create_etl_flow    model-catalog-api   POST /flows                 (catalog write)
   delete_etl_flow    hasura              delete the flow's configuration (catalog write)
-  create_flow_plan   svo-adapter         POST /plans/flow            (write; adapter-direct)
+  create_flow_plan   EM forward          POST /v1/adapter/plans/flow   (write)
 
-Adapter-direct, and why: the design (2026-11-20-adapter-behind-dynamo-apis) fronts the flow
-check with the catalog's POST /v2.0.0/flows/check, which does not exist yet. It fronts a flow
-plan with EM POST /v1/plans, but that route plans a flow only for a thread (thread_id +
-model_id), and create_flow_plan has no thread, so there is no equivalent route today.
+Both go through the EM's allowlisted adapter forward with the caller's token (no tool calls
+the adapter host). EM POST /v1/plans plans a flow only for a thread (thread_id + model_id),
+and create_flow_plan has no thread, so it uses the forward.
 
 Run a flow plan with submit_etl_workflow. A flow's author chose its default settings, and
 the pieces run with the runner's token, so the adapter refuses the submit until the
@@ -135,7 +134,7 @@ def register(mcp: Any, client: DynamoClient, settings: Settings) -> None:
         on) and, for every piece you can see, its input and output positions with their
         standard variables, the settings a flow may give it, and the values it returns. Call
         it with one step and no wires to learn a piece's positions. Needs a Tapis token.
-        Adapter-direct: the catalog's POST /v2.0.0/flows/check is not there yet.
+        Through the EM's adapter forward.
         """
         errors = _step_errors(steps)
         if errors:
@@ -152,7 +151,7 @@ def register(mcp: Any, client: DynamoClient, settings: Settings) -> None:
                         for item in outputs or [] if isinstance(item, dict)],
         }
         return run(lambda: bound(
-            client.post("svo", "/flows/check", token=tapis_token, json_body=body), settings, tapis_token))
+            client.post("adapter", "/flows/check", token=tapis_token, json_body=body), settings, tapis_token))
 
     @mcp.tool()
     def create_etl_flow(
@@ -300,7 +299,7 @@ def register(mcp: Any, client: DynamoClient, settings: Settings) -> None:
         (`links`). The pieces run with YOUR token, so show these to the user. To run the plan
         call submit_etl_workflow with accept_flow_settings=true, or pass your own values.
         dry_run=true (default) only echoes the request.
-        Adapter-direct: no EM route plans a flow without a thread.
+        Through the EM's adapter forward (EM POST /v1/plans plans a flow only for a thread).
         """
         body: dict[str, Any] = {"flow_id": flow_id, "inputs": inputs or {}}
         if allow_unapproved_piece_ids:
@@ -312,11 +311,11 @@ def register(mcp: Any, client: DynamoClient, settings: Settings) -> None:
         if blocked:
             return blocked
         try:
-            result = client.post("svo", "/plans/flow", token=tapis_token, json_body=body)
+            result = client.post("adapter", "/plans/flow", token=tapis_token, json_body=body)
         except DynamoAPIError as exc:
-            audit.log_write("create_flow_plan", {"flow_id": flow_id}, "svo", exc.status)
+            audit.log_write("create_flow_plan", {"flow_id": flow_id}, "adapter", exc.status)
             return backend_error(exc)
-        audit.log_write("create_flow_plan", {"flow_id": flow_id}, "svo", 200,
+        audit.log_write("create_flow_plan", {"flow_id": flow_id}, "adapter", 200,
                         result.get("plan_id") if isinstance(result, dict) else None)
         if isinstance(result, dict) and isinstance(result.get("plan_json"), dict):
             plan_json = result["plan_json"]

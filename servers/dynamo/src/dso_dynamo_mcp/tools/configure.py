@@ -1,14 +1,14 @@
 """
-Configure tools — check/plan (adapter) and catalog setup writes.
+Configure tools — check/plan (through the EM's adapter forward) and catalog setup writes.
 
 Tools registered here (5)
 -------------------------
-  check_readiness          svo-adapter  POST /readiness/check   (records a readiness row)
-  plan_model_run           svo-adapter  POST /plans/model-run   (preview only, nothing stored)
+  check_readiness          EM forward   POST /v1/adapter/readiness/check  (records a readiness row)
+  plan_model_run           EM forward   POST /v1/adapter/plans/model-run  (preview only, nothing stored)
   create_adapter_plan      EM           POST /v1/plans          (executor=svo_adapter; stores a draft plan)
 
-check_readiness and plan_model_run stay adapter-direct: the design's front routes (EM
-POST /v1/plans/readiness and /v1/plans/model-run) are not on the EM yet.
+check_readiness and plan_model_run go through the EM's allowlisted adapter forward with
+the caller's token; no tool calls the adapter host.
   create_configuration_setup  catalog   POST /modelconfigurationsetups (+ FK PUT) — catalog-gated
   update_setup_parameters     catalog   PUT  /parameters/{id}          — catalog-gated
 
@@ -42,7 +42,7 @@ def register(mcp: Any, client: DynamoClient, settings: Settings) -> None:
         target_contract ({standard_variable_uri, unit, format, ...}). Returns
         ready / transform_required / incompatible with per-dimension detail.
         Note: the adapter records each check as a readiness row (provenance); it
-        changes no catalog or model state. Adapter-direct: no EM front route yet.
+        changes no catalog or model state. Through the EM's adapter forward.
         """
         body = {
             "data_object_id": data_object_id,
@@ -51,7 +51,7 @@ def register(mcp: Any, client: DynamoClient, settings: Settings) -> None:
             "model_configuration_id": model_configuration_id,
         }
         body = {k: v for k, v in body.items() if v is not None}
-        return run(lambda: client.post("svo", "/readiness/check", token=tapis_token, json_body=body))
+        return run(lambda: client.post("adapter", "/readiness/check", token=tapis_token, json_body=body))
 
     @mcp.tool()
     def plan_model_run(
@@ -63,13 +63,13 @@ def register(mcp: Any, client: DynamoClient, settings: Settings) -> None:
 
         Read-only: returns per-input resolution (satisfied?, chosen source, ETL chain),
         whether the plan is complete, and the converging plan_json. Nothing is stored.
-        source_ids optionally restricts which data objects may be used. Adapter-direct: no EM
-        front route yet.
+        source_ids optionally restricts which data objects may be used. Through the EM's
+        adapter forward.
         """
         body = {"run_spec_id": run_spec_id, "source_ids": source_ids}
         body = {k: v for k, v in body.items() if v is not None}
         return run(lambda: bound(
-            client.post("svo", "/plans/model-run", token=tapis_token, json_body=body),
+            client.post("adapter", "/plans/model-run", token=tapis_token, json_body=body),
             settings, tapis_token))
 
     @mcp.tool()

@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import json
 
-from conftest import EM, SVO, TOKEN, build_tools, make_settings, writes
+from conftest import EM, TOKEN, build_tools, make_settings, writes
 
 
 def test_list_runs_em_and_adapter(rsps):
     t = build_tools(make_settings())
     rsps.get(f"{EM}/plans/runs", json={"problem_statement_id": "ps", "runs": []})
-    rsps.get(f"{SVO}/runs", json={"runs": [], "total": 0})
+    rsps.get(f"{EM}/adapter/runs", json={"runs": [], "total": 0})
     t["list_runs"](app_label="subside", limit=5, tapis_token=TOKEN)
     t["list_runs"](source="adapter", limit=10, offset=20, tapis_token=TOKEN)
     assert "app_label=subside" in rsps.calls[0].request.url and "limit=5" in rsps.calls[0].request.url
@@ -37,7 +37,7 @@ def test_em_run_status_survives_a_failing_child_lookup(rsps):
 
 def test_adapter_run_status_poll_reconciles_then_reads(rsps):
     t = build_tools(make_settings())
-    rsps.post(f"{SVO}/runs/a1/poll", json={"status": "completed"})
+    rsps.post(f"{EM}/adapter/runs/a1/poll", json={"status": "completed"})
     rsps.get(f"{EM}/plans/runs/a1", json={"id": "a1", "status": "completed", "health": "ok"})
     out = t["get_run_status"]("a1", source="adapter", poll=True, tapis_token=TOKEN)
     assert out["status"] == "completed" and out["poll"] == {"status": "completed"}
@@ -46,7 +46,7 @@ def test_adapter_run_status_poll_reconciles_then_reads(rsps):
 
 def test_provenance_is_read_only_and_bounded(rsps):
     t = build_tools(make_settings())
-    rsps.get(f"{SVO}/runs/a1/provenance", json={"run_id": "a1", "events": [{"event_type": "run.stalled"}]})
+    rsps.get(f"{EM}/adapter/runs/a1/provenance", json={"run_id": "a1", "events": [{"event_type": "run.stalled"}]})
     out = t["get_run_provenance"]("a1", limit=9999, tapis_token=TOKEN)
     assert out["events"][0]["event_type"] == "run.stalled"
     assert "limit=500" in rsps.calls[0].request.url

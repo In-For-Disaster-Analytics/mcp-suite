@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from conftest import EM, SVO, TOKEN, build_tools, make_settings, writes
+from conftest import EM, TOKEN, build_tools, make_settings, writes
 
 
 def test_create_run_plan_live_body_and_pass_through_of_422(rsps):

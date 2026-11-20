@@ -13,7 +13,6 @@ from dso_dynamo_mcp.tools import author, configure, flows, monitor, run, search
 
 API = "http://api.test/v2.0.0"
 EM = "http://em.test/v1"
-SVO = "http://svo.test"
 SEM = "http://sem.test"
 HASURA = "http://hasura.test"
 GRAPHQL = HASURA + "/v1/graphql"
@@ -32,7 +31,7 @@ class FakeMCP:
 
 
 def make_settings(**over: Any) -> Settings:
-    base = dict(api_url="http://api.test", em_url="http://em.test", svo_url=SVO,
+    base = dict(api_url="http://api.test", em_url="http://em.test",
                 semantic_url=SEM, hasura_url=HASURA, api_prefix="/v2.0.0", em_prefix="/v1",
                 tapis_token=None,
                 enable_catalog_writes=False, timeout=5.0, max_response_chars=200000)

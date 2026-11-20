@@ -47,12 +47,12 @@ def register(mcp: Any, client: DynamoClient, settings: Settings) -> None:
 
         source="ensemble_manager": the caller's bridge runs (filter by app_label or
         problem_statement_id; `offset` is ignored). source="adapter": adapter workflow runs
-        (limit/offset paging; response has `runs` and `total`). Adapter-direct: the EM has no
-        route that lists adapter runs yet.
+        (limit/offset paging; response has `runs` and `total`). Goes through the EM's
+        adapter forward (GET /v1/adapter/runs).
         """
         if source == "adapter":
             params = {"limit": min(max(limit, 1), 200), "offset": max(offset, 0)}
-            return run(lambda: bound(client.get("svo", "/runs", token=tapis_token, params=params),
+            return run(lambda: bound(client.get("adapter", "/runs", token=tapis_token, params=params),
                                      settings, tapis_token))
         params = {"app_label": app_label, "problem_statement_id": problem_statement_id, "limit": limit}
         return run(lambda: bound(client.get("em", "/plans/runs", token=tapis_token, params=params),
@@ -73,14 +73,13 @@ def register(mcp: Any, client: DynamoClient, settings: Settings) -> None:
         returned under `adapter_runs` (status + health), best effort.
         source="adapter": the adapter run; poll=true first asks the adapter to poll Tapis and
         persist any status transition (a reconcile, not a user write; never revives a
-        cancelled run). The read goes through the EM; the poll is adapter-direct (the EM has
-        no poll route yet).
+        cancelled run). The read goes through the EM; the poll goes through the EM's adapter forward.
         """
         if source == "adapter":
             def adapter() -> Any:
                 polled = None
                 if poll:
-                    polled = client.post("svo", f"/runs/{enc(run_id)}/poll", token=tapis_token)
+                    polled = client.post("adapter", f"/runs/{enc(run_id)}/poll", token=tapis_token)
                 got = client.get("em", f"/plans/runs/{enc(run_id)}", token=tapis_token)
                 return bound({**got, **({"poll": polled} if polled is not None else {})},
                              settings, tapis_token)
@@ -111,10 +110,10 @@ def register(mcp: Any, client: DynamoClient, settings: Settings) -> None:
     def get_run_provenance(run_id: str, limit: int = 100, tapis_token: str | None = None) -> Any:
         """Provenance events for an ADAPTER run (run.signal.*, run.stalled, run.cancelled, publication, ...).
 
-        Adapter-direct: the EM has no provenance route yet.
+        Goes through the EM's adapter forward (GET /v1/adapter/runs/{id}/provenance).
         """
         return run(lambda: bound(
-            client.get("svo", f"/runs/{enc(run_id)}/provenance", token=tapis_token,
+            client.get("adapter", f"/runs/{enc(run_id)}/provenance", token=tapis_token,
                        params={"limit": min(max(limit, 1), 500)}),
             settings, tapis_token))
 

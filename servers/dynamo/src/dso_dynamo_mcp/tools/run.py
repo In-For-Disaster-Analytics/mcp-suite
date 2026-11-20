@@ -8,8 +8,7 @@ Ensemble Manager, so the bridge path goes through EM):
       list_publishers, create_run_plan, get_plan, submit_run_plan, create_scenario
   Adapter ETL-only workflows                      Ensemble Manager  /v1/plans/submit
       submit_etl_workflow  (an `svo_` plan runs through the EM, which calls the adapter)
-      generate_workflow    adapter-direct: POST /workflows/generate has no EM route
-                           (design 2026-11-20-adapter-behind-dynamo-apis, open question 5)
+      generate_workflow    EM forward: POST /v1/adapter/workflows/generate
 
 Every write tool is dry-run by default (the dry run is a pure echo — NO request is
 sent), needs ``confirm=true`` to go live, and is audited. No tool here accepts a
@@ -198,13 +197,13 @@ def register(mcp: Any, client: DynamoClient, settings: Settings) -> None:
         """Generate (and persist onto the plan) the Tapis Workflows definition for an adapter plan.
 
         Does not register or run anything on Tapis. dry_run=true (default) only echoes the request.
-        Adapter-direct: the EM has no route for this yet (the design leaves it on the adapter).
+        Goes through the EM's adapter forward (POST /v1/adapter/workflows/generate).
         """
         plan_id = _adapter_plan_id(plan_id)
         body = {"plan_id": plan_id}
         if dry_run:
             return {"dry_run": True, "would_request": "POST /workflows/generate", "body": body}
-        return _live("generate_workflow", "svo", "/workflows/generate", body, tapis_token, confirm,
+        return _live("generate_workflow", "adapter", "/workflows/generate", body, tapis_token, confirm,
                      {"plan_id": plan_id})
 
     @mcp.tool()

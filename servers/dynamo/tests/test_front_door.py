@@ -1,5 +1,5 @@
-"""The adapter is behind DYNAMO's APIs: switched tools use the EM with the caller's token and
-never the adapter; tools that still call the adapter say so in their docstring."""
+"""The adapter is behind DYNAMO's APIs: every tool uses the EM with the caller's token and no
+tool calls the adapter host."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import EM, SVO, TOKEN, build_tools, make_settings
+from conftest import EM, TOKEN, build_tools, make_settings
 
 TOOLS_DIR = Path(__file__).resolve().parents[1] / "src" / "dso_dynamo_mcp" / "tools"
 
@@ -47,7 +47,7 @@ def test_submit_etl_workflow_goes_through_the_em_and_accepts_either_plan_id_form
 
 def test_generate_workflow_gets_the_adapters_own_plan_id(rsps):
     t = build_tools(make_settings())
-    rsps.post(f"{SVO}/workflows/generate", json={"plan_id": "p1"})
+    rsps.post(f"{EM}/adapter/workflows/generate", json={"plan_id": "p1"})
     t["generate_workflow"]("svo_p1", dry_run=False, confirm=True, tapis_token=TOKEN)
     assert json.loads(rsps.calls[0].request.body) == {"plan_id": "p1"}
 
@@ -72,31 +72,62 @@ def test_cancel_goes_through_the_em_for_both_run_kinds_and_dry_run_sends_nothing
 
 def test_poll_is_the_only_adapter_call_when_reading_an_adapter_run(rsps):
     t = build_tools(make_settings())
-    rsps.post(f"{SVO}/runs/a1/poll", json={"status": "completed"})
+    rsps.post(f"{EM}/adapter/runs/a1/poll", json={"status": "completed"})
     rsps.get(f"{EM}/plans/runs/a1", json={"id": "a1", "status": "completed"})
     t["get_run_status"]("a1", source="adapter", poll=True, tapis_token=TOKEN)
-    assert [c.request.url.split("/")[2] for c in rsps.calls] == ["svo.test", "em.test"]
+    assert [c.request.url.split("/")[2] for c in rsps.calls] == ["em.test", "em.test"]
 
 
-def test_every_tool_that_still_calls_the_adapter_says_so_in_its_docstring():
+# The adapter routes the EM forwards at /v1/adapter (mint-ensemble-manager
+# adapterAllowlist.ts). A tool may call only these.
+ALLOWED = [
+    r"/standard-variables", r"/reachable/\S+", r"/plans/discover", r"/plans/discover-sources",
+    r"/datasets/find", r"/data-objects", r"/transform-specs", r"/readiness/check",
+    r"/plans/model-run", r"/flows/check", r"/plans/flow", r"/transform-specs/\S+/test",
+    r"/runs", r"/runs/\S+/poll", r"/runs/\S+/provenance", r"/workflows/generate",
+]
+
+
+def source_calls() -> list[str]:
+    calls: list[str] = []
+    for path in sorted(TOOLS_DIR.glob("*.py")):
+        text = path.read_text()
+        pattern = r'(?:client\.\w+\(|_live\("\w+",\s*)"adapter",\s*f?"([^"]+)"'
+        for match in re.finditer(pattern, text):
+            calls.append(re.sub(r"\{[^}]+\}", "x", match.group(1)))
+    return calls
+
+
+def test_no_tool_names_the_adapter_host_as_a_client_target():
+    for path in TOOLS_DIR.glob("*.py"):
+        text = path.read_text()
+        assert not re.search(r'client\.\w+\(\s*"svo"', text), path.name
+        assert not re.search(r'_live\([^)]*"svo"', text), path.name
+
+
+def test_the_client_has_no_adapter_host_and_reaches_it_only_through_the_em():
+    from dso_dynamo_mcp.client import DynamoClient
+    client = DynamoClient(make_settings())
+    assert client.base("adapter") == "http://em.test/v1/adapter"
+    with pytest.raises(KeyError):
+        client.base("svo")
+
+
+def test_every_adapter_path_a_tool_calls_is_on_the_ems_allowlist():
+    calls = source_calls()
+    # 17 forwarded routes, but GET and POST /data-objects share a path.
+    for pattern in ALLOWED:
+        assert any(re.fullmatch(pattern, call) for call in calls), pattern
+    for call in calls:
+        assert any(re.fullmatch(pattern, call) for pattern in ALLOWED), call
+    # Never an operator or service-only route.
+    assert not [c for c in calls if c.startswith(("/admin", "/workflows/submit", "/plans/deferred"))
+                or "register-output" in c]
+
+
+def test_every_tool_that_reads_or_writes_through_the_forward_says_so_in_its_docstring():
     tools = build_tools(make_settings())
-    direct = {"list_standard_variables", "find_reachable_variables", "find_targets_for_source",
-              "find_sources_for_target", "find_datasets", "list_data_objects", "list_etl_pieces",
-              "register_data_object", "test_etl_piece", "check_readiness", "plan_model_run",
-              "check_etl_flow", "create_flow_plan", "generate_workflow", "list_runs",
-              "get_run_status", "get_run_provenance"}
-    undocumented = {n for n in direct if "dapter-direct" not in (tools[n].__doc__ or "")
-                    and "adapter-direct" not in (tools[n].__doc__ or "")}
-    # The discovery tools share one note in search.py's module docstring.
-    search_doc = (TOOLS_DIR / "search.py").read_text()
-    assert "adapter-direct" in search_doc
-    assert undocumented <= {"list_standard_variables", "find_reachable_variables",
-                            "find_targets_for_source", "find_sources_for_target",
-                            "find_datasets", "list_data_objects", "list_etl_pieces"}
-
-
-@pytest.mark.parametrize("name", ["list_standard_variables", "find_reachable_variables",
-                                  "find_targets_for_source", "find_sources_for_target",
-                                  "find_datasets", "list_data_objects", "list_etl_pieces"])
-def test_discovery_tools_are_listed_as_adapter_direct_in_the_module_note(name):
-    assert re.search(rf"\b{name}\b", (TOOLS_DIR / "search.py").read_text())
+    for name in ("list_runs", "get_run_status", "get_run_provenance", "generate_workflow",
+                 "check_readiness", "plan_model_run", "check_etl_flow", "create_flow_plan",
+                 "register_data_object", "test_etl_piece"):
+        assert "adapter forward" in (tools[name].__doc__ or ""), name

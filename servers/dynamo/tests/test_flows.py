@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from conftest import API, EM, GRAPHQL, SVO, TOKEN, build_tools, make_settings, writes
+from conftest import API, EM, GRAPHQL, TOKEN, build_tools, make_settings, writes
 
 STEPS = [
     {"position": 1, "etl_process_id": "p:ingest", "wires": [{"to": {"input": 0}, "from": {"flow_input": "corpus"}}]},
@@ -28,7 +28,7 @@ def sent(rsps, index=0):
 # --- check ---------------------------------------------------------------------
 
 def test_check_sends_the_graph_to_the_adapter_and_returns_its_answer(wt, rsps):
-    rsps.post(f"{SVO}/flows/check", json={"ok": False, "problems": [{"code": "FLOW_WIRE_DOES_NOT_FIT", "step": 2, "wire": 0}]})
+    rsps.post(f"{EM}/adapter/flows/check", json={"ok": False, "problems": [{"code": "FLOW_WIRE_DOES_NOT_FIT", "step": 2, "wire": 0}]})
     out = wt["check_etl_flow"](steps=STEPS, inputs=INPUTS, outputs=OUTPUTS)
     assert out["ok"] is False and out["problems"][0]["step"] == 2
     body = sent(rsps)
@@ -162,7 +162,7 @@ def test_plan_dry_run_echoes_the_request(wt, rsps):
 
 
 def test_plan_stores_the_plan_and_shows_what_the_flows_author_chose(wt, rsps):
-    rsps.post(f"{SVO}/plans/flow", json=PLAN)
+    rsps.post(f"{EM}/adapter/plans/flow", json=PLAN)
     out = wt["create_flow_plan"]("cfg", inputs={"cfg_input_1": "do-1"}, dry_run=False, confirm=True)
     assert out["plan_id"] == "plan-1"
     assert out["flow_settings"] == {
@@ -173,7 +173,7 @@ def test_plan_stores_the_plan_and_shows_what_the_flows_author_chose(wt, rsps):
 
 
 def test_plan_passes_a_refusal_through(wt, rsps):
-    rsps.post(f"{SVO}/plans/flow", status=422, json={"detail": {"code": "FLOW_INPUT_NOT_BOUND", "inputs": ["cfg_input_1"]}})
+    rsps.post(f"{EM}/adapter/plans/flow", status=422, json={"detail": {"code": "FLOW_INPUT_NOT_BOUND", "inputs": ["cfg_input_1"]}})
     out = wt["create_flow_plan"]("cfg", dry_run=False, confirm=True)
     assert out["status"] == 422 and out["body"]["detail"]["code"] == "FLOW_INPUT_NOT_BOUND"
 

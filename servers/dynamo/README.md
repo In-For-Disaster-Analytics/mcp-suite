@@ -12,7 +12,6 @@ Design spec: [`../../docs/design/2026-11-18-dynamo-mcp-server.md`](../../docs/de
 |---|---|---|---|
 | model-catalog-api | `DYNAMO_API_URL` (+ `DYNAMO_API_PREFIX=/v2.0.0`) | `https://mintdevapi.pods.portals.tapis.io` | models, configurations, setups, SVOs, dataset specs |
 | mint-ensemble-manager | `DYNAMO_EM_URL` (+ `DYNAMO_EM_PREFIX=/v1`) | `https://mintdevensemble.pods.portals.tapis.io` | **model-bridge runs** (`/v1/plans`), adapter ETL plans, submit, run status and cancel |
-| svo-adapter (internal engine) | `DYNAMO_SVO_URL` | `https://mintdevsvo.pods.portals.tapis.io` | only the tools in "Adapter-direct tools" below |
 | semantic-search | `DYNAMO_SEMANTIC_URL` | `https://mintdevsemanticsearch.pods.portals.tapis.io` | `search_models`, `search_standard_variables` |
 | Hasura GraphQL | `DYNAMO_HASURA_URL` | `https://mintdevgraphql.pods.portals.tapis.io` | `create_etl_function_piece` and `delete_etl_function_piece` (the catalog REST API has no route for ETL processes) |
 
@@ -44,21 +43,22 @@ never sent a token. Tapis JWTs expire in hours.
 
 | Group | Tools | Backend |
 |---|---|---|
-| **Search / discover** (read-only) | `search_models`, `search_standard_variables`, `list_models`, `get_model_configuration`, `list_standard_variables`, `find_reachable_variables`, `find_targets_for_source`, `find_sources_for_target`, `find_datasets`, `list_data_objects`, `list_etl_pieces` | semantic-search, catalog, adapter |
-| **Configure** | `check_readiness`¹, `plan_model_run` (preview), `create_adapter_plan`², `create_configuration_setup`³, `update_setup_parameters`³ | adapter, catalog |
-| **Author / register** | `create_standard_variable`³, `create_model`³ (composite), `create_etl_piece`³, `create_etl_function_piece`³, `delete_etl_function_piece`³, `register_data_object`³, `test_etl_piece` | catalog, Hasura, adapter |
-| **Flows** | `list_etl_flows`, `check_etl_flow`, `create_etl_flow`³, `delete_etl_flow`³, `create_flow_plan`² | Hasura, adapter, catalog |
+| **Search / discover** (read-only) | `search_models`, `search_standard_variables`, `list_models`, `get_model_configuration`, `list_standard_variables`, `find_reachable_variables`, `find_targets_for_source`, `find_sources_for_target`, `find_datasets`, `list_data_objects`, `list_etl_pieces` | semantic-search, catalog, EM forward |
+| **Configure** | `check_readiness`¹, `plan_model_run` (preview), `create_adapter_plan`², `create_configuration_setup`³, `update_setup_parameters`³ | EM forward, catalog |
+| **Author / register** | `create_standard_variable`³, `create_model`³ (composite), `create_etl_piece`³, `create_etl_function_piece`³, `delete_etl_function_piece`³, `register_data_object`³, `test_etl_piece` | catalog, Hasura, EM forward |
+| **Flows** | `list_etl_flows`, `check_etl_flow`, `create_etl_flow`³, `delete_etl_flow`³, `create_flow_plan`² | Hasura, EM forward, catalog |
 | **Run — model bridge** | `list_publishers`, `create_run_plan`², `get_plan`, `submit_run_plan`², `create_scenario`² | Ensemble Manager |
-| **Run — adapter ETL-only** | `generate_workflow`², `submit_etl_workflow`² | adapter (generate), EM (submit) |
-| **Monitor** | `list_runs`, `get_run_status`, `get_run_provenance`, `cancel_run`² | EM (+ adapter-direct for the pending routes) |
+| **Run — adapter ETL-only** | `generate_workflow`², `submit_etl_workflow`² | EM forward (generate), EM (submit) |
+| **Monitor** | `list_runs`, `get_run_status`, `get_run_provenance`, `cancel_run`² | EM (+ EM forward for polls, provenance and adapter run lists) |
 
-### Front door: DYNAMO's APIs first, the adapter only where there is no route yet
+### Front door: every call goes through DYNAMO's APIs
 
 The SVO adapter is an internal engine behind the EM (`/v1/...`) and catalog (`/v2.0.0/...`) APIs
 ([design](https://github.com/mintproject/monorepo/blob/develop/docs/design/2026-11-20-adapter-behind-dynamo-apis.md)).
-Tools go through the EM wherever it has a route, with your token. Routes marked "pending" are
-design-table routes that are not on the EM or catalog yet; those tools still call the adapter and
-move when the route lands.
+No tool calls the adapter host, and there is no adapter URL setting. Your token goes to the EM; the
+EM forwards it to the adapter, which checks it. Tools use the EM's own routes where it has them, and
+the EM's allowlisted forward, `/v1/adapter/{adapter path}`, for the rest. Anything off the EM's
+allowlist (every operator route, the service-only routes) is refused with 404.
 
 | Tool | Route today |
 |---|---|
@@ -67,23 +67,22 @@ move when the route lands.
 | `get_run_status` (adapter runs and children) | EM `GET /v1/plans/runs/{id}` |
 | `cancel_run` | EM `POST /v1/plans/runs/{id}/cancel` (both run kinds) |
 
-**Adapter-direct tools** (also stated in each tool's docstring):
+**Tools that use the EM's forward** (`/v1/adapter/...`):
 
-| Tool | Adapter route | Front route (pending) |
-|---|---|---|
-| `list_standard_variables` | `GET /standard-variables` | EM `GET /v1/standard-variables` |
-| `find_reachable_variables` | `GET /reachable/{id}` | EM `GET /v1/plans/reachable/{id}` |
-| `find_targets_for_source`, `find_sources_for_target` | `POST /plans/discover`, `/plans/discover-sources` | EM `POST /v1/plans/discover`, `/discover-sources` |
-| `find_datasets` | `POST /datasets/find` | EM `POST /v1/datasets/find` |
-| `list_data_objects`, `register_data_object` | `GET`/`POST /data-objects` | EM `/v1/data-objects` |
-| `list_etl_pieces`, `test_etl_piece` | `GET /transform-specs`, `POST /transform-specs/{id}/test` | EM `GET /v1/etl-pieces`, `POST /v1/etl-pieces/{id}/test` |
-| `check_readiness`, `plan_model_run` | `POST /readiness/check`, `/plans/model-run` | EM `POST /v1/plans/readiness`, `/v1/plans/model-run` |
-| `check_etl_flow` | `POST /flows/check` | catalog `POST /v2.0.0/flows/check` |
-| `create_flow_plan` | `POST /plans/flow` | none: EM `POST /v1/plans` plans a flow only for a thread |
-| `generate_workflow` | `POST /workflows/generate` | none (design open question 5: stays on the adapter) |
-| `list_runs(source="adapter")` | `GET /runs` | none (the EM's run list is per problem statement) |
-| `get_run_status(poll=true)` (the poll only) | `POST /runs/{id}/poll` | EM `POST /v1/plans/runs/{id}/poll` |
-| `get_run_provenance` | `GET /runs/{id}/provenance` | EM `GET /v1/plans/runs/{id}/provenance` |
+| Tool | Forwarded adapter route |
+|---|---|
+| `list_standard_variables` | `GET /standard-variables` |
+| `find_reachable_variables` | `GET /reachable/{id}` |
+| `find_targets_for_source`, `find_sources_for_target` | `POST /plans/discover`, `/plans/discover-sources` |
+| `find_datasets` | `POST /datasets/find` |
+| `list_data_objects`, `register_data_object` | `GET`/`POST /data-objects` |
+| `list_etl_pieces`, `test_etl_piece` | `GET /transform-specs`, `POST /transform-specs/{id}/test` |
+| `check_readiness`, `plan_model_run` | `POST /readiness/check`, `/plans/model-run` |
+| `check_etl_flow`, `create_flow_plan` | `POST /flows/check`, `POST /plans/flow` |
+| `generate_workflow` | `POST /workflows/generate` |
+| `list_runs(source="adapter")` | `GET /runs` |
+| `get_run_status(poll=true)` (the poll only) | `POST /runs/{id}/poll` |
+| `get_run_provenance` | `GET /runs/{id}/provenance` |
 
 Known gap: the EM's `/v1/plans/submit` does not forward `accept_flow_settings` to the adapter yet,
 so `submit_etl_workflow(accept_flow_settings=true)` for a flow plan needs that EM change.

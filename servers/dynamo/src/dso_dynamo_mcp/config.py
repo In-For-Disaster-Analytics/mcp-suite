@@ -8,8 +8,8 @@ Pointing them at another stack is a config change; the same write gates apply.
 Credentials
 -----------
 A Tapis JWT is supplied per call (``tapis_token``) or, as a fallback, via
-``DYNAMO_TAPIS_TOKEN``. Every backend (model-catalog-api, Ensemble Manager,
-svo-adapter) takes it as ``Authorization: Bearer``. Values are never logged.
+``DYNAMO_TAPIS_TOKEN``. Every backend (model-catalog-api, Ensemble Manager)
+takes it as ``Authorization: Bearer``. Values are never logged.
 
 Gates
 -----
@@ -48,9 +48,8 @@ def _truthy(value: str | None) -> bool:
 class Settings:
     api_url: str = field(default_factory=lambda: _url("DYNAMO_API_URL", "mintdevapi"))
     em_url: str = field(default_factory=lambda: _url("DYNAMO_EM_URL", "mintdevensemble"))
-    # The SVO adapter is an internal engine behind the EM and catalog APIs. Tools use it only
-    # where no EM/catalog front route exists yet (documented per tool).
-    svo_url: str = field(default_factory=lambda: _url("DYNAMO_SVO_URL", "mintdevsvo"))
+    # The SVO adapter is an internal engine behind the EM and catalog APIs: there is no
+    # adapter URL here. Tools reach its user routes through the EM's /v1/adapter forward.
     semantic_url: str = field(
         default_factory=lambda: _url("DYNAMO_SEMANTIC_URL", "mintdevsemanticsearch")
     )
@@ -77,11 +76,10 @@ class Settings:
 
     def log_startup_banner(self) -> None:
         logger.info(
-            "DSO DYNAMO MCP Server starting — api=%s em=%s svo=%s semantic=%s hasura=%s "
+            "DSO DYNAMO MCP Server starting — api=%s em=%s semantic=%s hasura=%s "
             "DYNAMO_TAPIS_TOKEN=%s catalog_writes=%s",
             self.api_url,
             self.em_url,
-            self.svo_url,
             self.semantic_url,
             self.hasura_url,
             "[SET]" if self.tapis_token else "[NOT SET]",

@@ -7,16 +7,15 @@ Tools registered here (11)
   search_standard_variables  semantic-search  GET /search?target=svo
   list_models                catalog API      GET /modelconfigurations
   get_model_configuration    catalog API      GET /modelconfigurations/{id}
-  (all of the svo-adapter tools below are adapter-direct: the design's EM front routes, e.g.
-   GET /v1/standard-variables, POST /v1/plans/discover, GET /v1/data-objects,
-   GET /v1/etl-pieces, are not on the EM yet. Switch them to client "em" when they land.)
-  list_standard_variables    svo-adapter      GET /standard-variables
-  find_reachable_variables   svo-adapter      GET /reachable/{data_object_id}
-  find_targets_for_source    svo-adapter      POST /plans/discover
-  find_sources_for_target    svo-adapter      POST /plans/discover-sources
-  find_datasets              svo-adapter      POST /datasets/find
-  list_data_objects          svo-adapter      GET /data-objects
-  list_etl_pieces            svo-adapter      GET /transform-specs
+  (the adapter tools below go through the EM's allowlisted forward, /v1/adapter/..., with the
+   caller's token; no tool calls the adapter host.)
+  list_standard_variables    EM forward       GET /standard-variables
+  find_reachable_variables   EM forward       GET /reachable/{data_object_id}
+  find_targets_for_source    EM forward       POST /plans/discover
+  find_sources_for_target    EM forward       POST /plans/discover-sources
+  find_datasets              EM forward       POST /datasets/find
+  list_data_objects          EM forward       GET /data-objects
+  list_etl_pieces            EM forward       GET /transform-specs
 """
 
 from __future__ import annotations
@@ -117,13 +116,13 @@ def register(mcp: Any, client: DynamoClient, settings: Settings) -> None:
     def list_standard_variables(tapis_token: str | None = None) -> Any:
         """Standard variables the SVO adapter knows, with which ETL pieces produce/consume each."""
         return run(lambda: bound(
-            client.get("svo", "/standard-variables", token=tapis_token), settings, tapis_token))
+            client.get("adapter", "/standard-variables", token=tapis_token), settings, tapis_token))
 
     @mcp.tool()
     def find_reachable_variables(data_object_id: str, tapis_token: str | None = None) -> Any:
         """SVO variables reachable FROM a registered data object via ETL chains, with the shortest chain."""
         return run(lambda: bound(
-            client.get("svo", f"/reachable/{enc(data_object_id)}", token=tapis_token),
+            client.get("adapter", f"/reachable/{enc(data_object_id)}", token=tapis_token),
             settings, tapis_token))
 
     @mcp.tool()
@@ -136,7 +135,7 @@ def register(mcp: Any, client: DynamoClient, settings: Settings) -> None:
         """Given a source contract (SVO uri / unit / format), list every target contract reachable by ETL."""
         body = {"standard_variable_uri": standard_variable_uri, "unit": unit, "format": format}
         return run(lambda: bound(
-            client.post("svo", "/plans/discover", token=tapis_token, json_body=body),
+            client.post("adapter", "/plans/discover", token=tapis_token, json_body=body),
             settings, tapis_token))
 
     @mcp.tool()
@@ -149,7 +148,7 @@ def register(mcp: Any, client: DynamoClient, settings: Settings) -> None:
         """Given a wanted target contract, list the source contracts that can reach it by ETL."""
         body = {"standard_variable_uri": standard_variable_uri, "unit": unit, "format": format}
         return run(lambda: bound(
-            client.post("svo", "/plans/discover-sources", token=tapis_token, json_body=body),
+            client.post("adapter", "/plans/discover-sources", token=tapis_token, json_body=body),
             settings, tapis_token))
 
     @mcp.tool()
@@ -171,14 +170,14 @@ def register(mcp: Any, client: DynamoClient, settings: Settings) -> None:
         if spatial_coverage_intersects is not None:
             body["spatial_coverage__intersects"] = spatial_coverage_intersects
         return run(lambda: bound(
-            client.post("svo", "/datasets/find", token=tapis_token, json_body=body),
+            client.post("adapter", "/datasets/find", token=tapis_token, json_body=body),
             settings, tapis_token))
 
     @mcp.tool()
     def list_data_objects(tapis_token: str | None = None) -> Any:
         """Registered data objects (sources) with each variable's SVO uri, unit and format."""
         return run(lambda: bound(
-            client.get("svo", "/data-objects", token=tapis_token), settings, tapis_token))
+            client.get("adapter", "/data-objects", token=tapis_token), settings, tapis_token))
 
     @mcp.tool()
     def list_etl_pieces(tapis_token: str | None = None) -> Any:
@@ -189,4 +188,4 @@ def register(mcp: Any, client: DynamoClient, settings: Settings) -> None:
         `tapis_app_id`, waits in the HPC queue).
         """
         return run(lambda: bound(
-            client.get("svo", "/transform-specs", token=tapis_token), settings, tapis_token))
+            client.get("adapter", "/transform-specs", token=tapis_token), settings, tapis_token))
