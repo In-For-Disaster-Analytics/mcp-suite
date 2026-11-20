@@ -3,10 +3,16 @@ Monitor tools — run state, provenance and cancellation.
 
 Tools registered here (4)
 -------------------------
-  list_runs           EM GET /v1/plans/runs  |  adapter GET /runs
-  get_run_status      EM GET /v1/plans/runs/{id} (reconciled)  |  adapter GET /runs/{id} [+ POST poll]
-  get_run_provenance  adapter GET /runs/{id}/provenance
-  cancel_run          EM POST /v1/plans/runs/{id}/cancel  |  adapter POST /runs/{id}/cancel
+  list_runs           EM GET /v1/plans/runs  |  adapter GET /runs (kept direct, see below)
+  get_run_status      EM GET /v1/plans/runs/{id} (an EM run or an adapter run)  [+ adapter POST poll]
+  get_run_provenance  adapter GET /runs/{id}/provenance (kept direct, see below)
+  cancel_run          EM POST /v1/plans/runs/{id}/cancel (an EM run or an adapter run)
+
+Front door: the EM's run routes take an EM run id ("ue_...") or an adapter run id, so
+adapter runs are read and cancelled through the EM. Three adapter routes have no EM route
+yet and stay direct until the EM adds them (design 2026-11-20-adapter-behind-dynamo-apis,
+route table): GET /runs (the EM's GET /plans/runs lists a problem statement's runs, with
+no limit/offset/total), POST /runs/{id}/poll and GET /runs/{id}/provenance.
 
 Run ids differ by service: an EM run id comes from submit_run_plan/create_scenario/
 list_runs(source="ensemble_manager"); an adapter run id from submit_etl_workflow or
@@ -41,7 +47,8 @@ def register(mcp: Any, client: DynamoClient, settings: Settings) -> None:
 
         source="ensemble_manager": the caller's bridge runs (filter by app_label or
         problem_statement_id; `offset` is ignored). source="adapter": adapter workflow runs
-        (limit/offset paging; response has `runs` and `total`).
+        (limit/offset paging; response has `runs` and `total`). Adapter-direct: the EM has no
+        route that lists adapter runs yet.
         """
         if source == "adapter":
             params = {"limit": min(max(limit, 1), 200), "offset": max(offset, 0)}
@@ -66,14 +73,15 @@ def register(mcp: Any, client: DynamoClient, settings: Settings) -> None:
         returned under `adapter_runs` (status + health), best effort.
         source="adapter": the adapter run; poll=true first asks the adapter to poll Tapis and
         persist any status transition (a reconcile, not a user write; never revives a
-        cancelled run).
+        cancelled run). The read goes through the EM; the poll is adapter-direct (the EM has
+        no poll route yet).
         """
         if source == "adapter":
             def adapter() -> Any:
                 polled = None
                 if poll:
                     polled = client.post("svo", f"/runs/{enc(run_id)}/poll", token=tapis_token)
-                got = client.get("svo", f"/runs/{enc(run_id)}", token=tapis_token)
+                got = client.get("em", f"/plans/runs/{enc(run_id)}", token=tapis_token)
                 return bound({**got, **({"poll": polled} if polled is not None else {})},
                              settings, tapis_token)
             return run(adapter)
@@ -88,7 +96,7 @@ def register(mcp: Any, client: DynamoClient, settings: Settings) -> None:
                     if not cid:
                         continue
                     try:
-                        c = client.get("svo", f"/runs/{enc(str(cid))}", token=tapis_token)
+                        c = client.get("em", f"/plans/runs/{enc(str(cid))}", token=tapis_token)
                         summaries.append({k: c.get(k) for k in
                                           ("id", "status", "health", "started_at", "last_signal_at",
                                            "error_message", "tapis_run_id") if k in c})
@@ -101,7 +109,10 @@ def register(mcp: Any, client: DynamoClient, settings: Settings) -> None:
 
     @mcp.tool()
     def get_run_provenance(run_id: str, limit: int = 100, tapis_token: str | None = None) -> Any:
-        """Provenance events for an ADAPTER run (run.signal.*, run.stalled, run.cancelled, publication, ...)."""
+        """Provenance events for an ADAPTER run (run.signal.*, run.stalled, run.cancelled, publication, ...).
+
+        Adapter-direct: the EM has no provenance route yet.
+        """
         return run(lambda: bound(
             client.get("svo", f"/runs/{enc(run_id)}/provenance", token=tapis_token,
                        params={"limit": min(max(limit, 1), 500)}),
@@ -121,8 +132,8 @@ def register(mcp: Any, client: DynamoClient, settings: Settings) -> None:
         with the user's own token; 403 RUN_CANCEL_FORBIDDEN is returned verbatim). `cancelled`
         is final. dry_run=true (default) only echoes; dry_run=false + confirm=true cancels.
         """
-        service, path = (("em", f"/plans/runs/{enc(run_id)}/cancel") if source == "ensemble_manager"
-                         else ("svo", f"/runs/{enc(run_id)}/cancel"))
+        # The EM cancels both kinds of run (an adapter run id is not an "ue_" id).
+        service, path = "em", f"/plans/runs/{enc(run_id)}/cancel"
         if dry_run:
             return {"dry_run": True, "would_request": f"POST {path}", "source": source}
         blocked = write_gate(settings, "cancel_run", client.effective_token(tapis_token), confirm=confirm)

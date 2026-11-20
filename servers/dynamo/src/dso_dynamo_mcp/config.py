@@ -48,6 +48,8 @@ def _truthy(value: str | None) -> bool:
 class Settings:
     api_url: str = field(default_factory=lambda: _url("DYNAMO_API_URL", "mintdevapi"))
     em_url: str = field(default_factory=lambda: _url("DYNAMO_EM_URL", "mintdevensemble"))
+    # The SVO adapter is an internal engine behind the EM and catalog APIs. Tools use it only
+    # where no EM/catalog front route exists yet (documented per tool).
     svo_url: str = field(default_factory=lambda: _url("DYNAMO_SVO_URL", "mintdevsvo"))
     semantic_url: str = field(
         default_factory=lambda: _url("DYNAMO_SEMANTIC_URL", "mintdevsemanticsearch")

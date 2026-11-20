@@ -5,7 +5,10 @@ Tools registered here (5)
 -------------------------
   check_readiness          svo-adapter  POST /readiness/check   (records a readiness row)
   plan_model_run           svo-adapter  POST /plans/model-run   (preview only, nothing stored)
-  create_adapter_plan      svo-adapter  POST /plans             (stores a draft plan; dry-run first)
+  create_adapter_plan      EM           POST /v1/plans          (executor=svo_adapter; stores a draft plan)
+
+check_readiness and plan_model_run stay adapter-direct: the design's front routes (EM
+POST /v1/plans/readiness and /v1/plans/model-run) are not on the EM yet.
   create_configuration_setup  catalog   POST /modelconfigurationsetups (+ FK PUT) — catalog-gated
   update_setup_parameters     catalog   PUT  /parameters/{id}          — catalog-gated
 
@@ -39,7 +42,7 @@ def register(mcp: Any, client: DynamoClient, settings: Settings) -> None:
         target_contract ({standard_variable_uri, unit, format, ...}). Returns
         ready / transform_required / incompatible with per-dimension detail.
         Note: the adapter records each check as a readiness row (provenance); it
-        changes no catalog or model state.
+        changes no catalog or model state. Adapter-direct: no EM front route yet.
         """
         body = {
             "data_object_id": data_object_id,
@@ -60,7 +63,8 @@ def register(mcp: Any, client: DynamoClient, settings: Settings) -> None:
 
         Read-only: returns per-input resolution (satisfied?, chosen source, ETL chain),
         whether the plan is complete, and the converging plan_json. Nothing is stored.
-        source_ids optionally restricts which data objects may be used.
+        source_ids optionally restricts which data objects may be used. Adapter-direct: no EM
+        front route yet.
         """
         body = {"run_spec_id": run_spec_id, "source_ids": source_ids}
         body = {k: v for k, v in body.items() if v is not None}
@@ -93,7 +97,8 @@ def register(mcp: Any, client: DynamoClient, settings: Settings) -> None:
         approved and that you agree to run with your own Tapis token. Never needed for your own
         pieces.
 
-        The returned plan_id feeds generate_workflow / submit_etl_workflow.
+        The plan is stored through the EM (POST /v1/plans, executor=svo_adapter). The returned
+        plan_id (prefixed `svo_`) feeds generate_workflow / submit_etl_workflow.
         dry_run=true (default) only echoes the request; dry_run=false + confirm=true stores the plan.
 
         A stored plan comes back with `run_parameters`, which says what a run of it needs:
@@ -111,18 +116,19 @@ def register(mcp: Any, client: DynamoClient, settings: Settings) -> None:
         }
         body = {k: v for k, v in body.items() if v is not None}
         if dry_run:
-            return {"dry_run": True, "would_request": "POST /plans", "body": body,
+            return {"dry_run": True, "would_request": "POST /v1/plans", "body": body,
                     "note": "Nothing sent. Re-call with dry_run=false and confirm=true to store the plan."}
         tok = client.effective_token(tapis_token)
         blocked = write_gate(settings, "create_adapter_plan", tok, confirm=confirm)
         if blocked:
             return blocked
         try:
-            result = client.post("svo", "/plans", token=tapis_token, json_body=body)
+            result = client.post("em", "/plans", token=tapis_token,
+                                 json_body={"executor": "svo_adapter", "adapter_request": body})
         except DynamoAPIError as exc:
-            audit.log_write("create_adapter_plan", {"data_object_id": data_object_id}, "svo", exc.status)
+            audit.log_write("create_adapter_plan", {"data_object_id": data_object_id}, "em", exc.status)
             return backend_error(exc)
-        audit.log_write("create_adapter_plan", {"data_object_id": data_object_id}, "svo", 200,
+        audit.log_write("create_adapter_plan", {"data_object_id": data_object_id}, "em", 200,
                         result.get("plan_id") if isinstance(result, dict) else None)
         if isinstance(result, dict) and isinstance(result.get("plan_json"), dict):
             result = {**result, "run_parameters": run_parameters(result["plan_json"])}

@@ -58,20 +58,21 @@ def test_dry_run_scenario_echo_includes_key_for_retry(rsps):
 
 def test_submit_etl_workflow_sends_idempotency_header_not_composite_fields(rsps):
     t = build_tools(make_settings())
-    rsps.post(f"{SVO}/workflows/submit", json={"run_id": "ar1"})
+    rsps.post(f"{EM}/plans/submit", json={"run_id": "ar1"})
     out = t["submit_etl_workflow"]("plan1", args={"start_date": "2020-01-01"}, run_name="r",
                                    dry_run=False, confirm=True, tapis_token=TOKEN)
     call = writes(rsps)[0].request
     assert call.headers["Idempotency-Key"] == out["idempotency_key"]
     body = json.loads(call.body)
-    assert body == {"plan_id": "plan1", "args": {"start_date": "2020-01-01"}, "run_name": "r",
-                    "recreate": False, "dry_run": False}
+    assert body == {"plan_id": "svo_plan1", "parameter_values": {"start_date": "2020-01-01"},
+                    "run_name": "r", "recreate": False, "dry_run": False,
+                    "idempotency_key": out["idempotency_key"]}
     assert "model_task" not in body and "execution_id" not in body
 
 
 def test_adapter_error_code_passes_through_on_submit(rsps):
     t = build_tools(make_settings())
-    rsps.post(f"{SVO}/workflows/submit", status=502,
+    rsps.post(f"{EM}/plans/submit", status=502,
               json={"detail": {"code": "TAPIS_WORKFLOW_SUBMISSION_FAILED", "run_id": "ar2"}})
     out = t["submit_etl_workflow"]("p", dry_run=False, confirm=True, tapis_token=TOKEN)
     assert out["status"] == 502

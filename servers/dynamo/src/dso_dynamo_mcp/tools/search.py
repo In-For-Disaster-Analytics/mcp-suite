@@ -7,6 +7,9 @@ Tools registered here (11)
   search_standard_variables  semantic-search  GET /search?target=svo
   list_models                catalog API      GET /modelconfigurations
   get_model_configuration    catalog API      GET /modelconfigurations/{id}
+  (all of the svo-adapter tools below are adapter-direct: the design's EM front routes, e.g.
+   GET /v1/standard-variables, POST /v1/plans/discover, GET /v1/data-objects,
+   GET /v1/etl-pieces, are not on the EM yet. Switch them to client "em" when they land.)
   list_standard_variables    svo-adapter      GET /standard-variables
   find_reachable_variables   svo-adapter      GET /reachable/{data_object_id}
   find_targets_for_source    svo-adapter      POST /plans/discover

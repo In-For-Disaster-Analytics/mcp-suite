@@ -9,8 +9,11 @@ Tools registered here (7)
   create_etl_piece          catalog  same composite, for an ETL piece (a ModelConfiguration bound to a Tapis app)
   create_etl_function_piece hasura   insert_modelcatalog_etl_process_one (Python source, no Tapis app)
   delete_etl_function_piece hasura   delete_modelcatalog_etl_process_by_pk (the caller's own piece only)
-  register_data_object      adapter  POST /data-objects
-  test_etl_piece            adapter  POST /transform-specs/{id}/test (adapter dry-run by default)
+  register_data_object      adapter  POST /data-objects (adapter-direct)
+  test_etl_piece            adapter  POST /transform-specs/{id}/test (adapter-direct)
+
+The two adapter tools stay direct because the design's front routes (EM POST /v1/data-objects,
+POST /v1/etl-pieces/{id}/test) are not on the EM yet.
 
 Gates: dry-run by default; live needs confirm=true; the catalog/registry tools
 also need DYNAMO_ENABLE_CATALOG_WRITES=1. Writes are NOT atomic (several REST
@@ -435,7 +438,7 @@ def register(mcp: Any, client: DynamoClient, settings: Settings) -> None:
         variables[]: {standard_variable_uri, local_name?, unit?, dimensionality?, spatial_type?,
                       crs?, grid_id?, grid_description?, temporal_resolution?}
         Owner-scoped model-output objects (owner_execution_id etc.) are server-owned and not
-        creatable here. Same gates as the catalog writes.
+        creatable here. Same gates as the catalog writes. Adapter-direct: no EM route yet.
         """
         if not label.strip() or not resource_uri.strip():
             return {"error": "validation_failed", "errors": ["label and resource_uri are required"]}
@@ -675,7 +678,7 @@ def register(mcp: Any, client: DynamoClient, settings: Settings) -> None:
         spec_id is the ADAPTER transform-spec id (see list_etl_pieces); a piece authored
         in the catalog appears there after the adapter's catalog sync. dry_run=true
         (default) has the adapter only GENERATE the pipeline definition; dry_run=false +
-        confirm=true submits and runs it on Tapis Workflows.
+        confirm=true submits and runs it on Tapis Workflows. Adapter-direct: no EM route yet.
         """
         body = {"args": args or {}, "dry_run": dry_run, "run_name": run_name}
         body = {k: v for k, v in body.items() if v is not None}

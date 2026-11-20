@@ -3,7 +3,8 @@ HTTP client for the four DYNAMO backends.
 
   api       model-catalog-api            ``{api_url}/v2.0.0``
   em        mint-ensemble-manager        ``{em_url}/v1``
-  svo       svo-adapter-service          ``{svo_url}``
+  svo       svo-adapter-service          ``{svo_url}``  (internal engine: only tools whose
+            front route is not on the EM/catalog yet call it; see each tool's docstring)
   semantic  semantic-search-service      ``{semantic_url}``
   hasura    Hasura GraphQL (catalog)     ``{hasura_url}/v1/graphql``
 

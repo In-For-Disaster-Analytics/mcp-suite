@@ -7,10 +7,15 @@ or nothing ("runs after"). A flow holds no code and grants nothing: every piece 
 still checked for whoever plans and runs it.
 
   list_etl_flows     hasura              modelcatalog_configuration with a flow (as the caller)
-  check_etl_flow     svo-adapter         POST /flows/check           (read-only)
+  check_etl_flow     svo-adapter         POST /flows/check           (read-only; adapter-direct)
   create_etl_flow    model-catalog-api   POST /flows                 (catalog write)
   delete_etl_flow    hasura              delete the flow's configuration (catalog write)
-  create_flow_plan   svo-adapter         POST /plans/flow            (write)
+  create_flow_plan   svo-adapter         POST /plans/flow            (write; adapter-direct)
+
+Adapter-direct, and why: the design (2026-11-20-adapter-behind-dynamo-apis) fronts the flow
+check with the catalog's POST /v2.0.0/flows/check, which does not exist yet. It fronts a flow
+plan with EM POST /v1/plans, but that route plans a flow only for a thread (thread_id +
+model_id), and create_flow_plan has no thread, so there is no equivalent route today.
 
 Run a flow plan with submit_etl_workflow. A flow's author chose its default settings, and
 the pieces run with the runner's token, so the adapter refuses the submit until the
@@ -130,6 +135,7 @@ def register(mcp: Any, client: DynamoClient, settings: Settings) -> None:
         on) and, for every piece you can see, its input and output positions with their
         standard variables, the settings a flow may give it, and the values it returns. Call
         it with one step and no wires to learn a piece's positions. Needs a Tapis token.
+        Adapter-direct: the catalog's POST /v2.0.0/flows/check is not there yet.
         """
         errors = _step_errors(steps)
         if errors:
@@ -294,6 +300,7 @@ def register(mcp: Any, client: DynamoClient, settings: Settings) -> None:
         (`links`). The pieces run with YOUR token, so show these to the user. To run the plan
         call submit_etl_workflow with accept_flow_settings=true, or pass your own values.
         dry_run=true (default) only echoes the request.
+        Adapter-direct: no EM route plans a flow without a thread.
         """
         body: dict[str, Any] = {"flow_id": flow_id, "inputs": inputs or {}}
         if allow_unapproved_piece_ids:

@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from conftest import API, GRAPHQL, SVO, TOKEN, build_tools, make_settings, writes
+from conftest import API, EM, GRAPHQL, SVO, TOKEN, build_tools, make_settings, writes
 
 STEPS = [
     {"position": 1, "etl_process_id": "p:ingest", "wires": [{"to": {"input": 0}, "from": {"flow_input": "corpus"}}]},
@@ -179,7 +179,7 @@ def test_plan_passes_a_refusal_through(wt, rsps):
 
 
 def test_a_flows_settings_are_accepted_only_when_the_caller_says_so(wt, rsps):
-    rsps.post(f"{SVO}/workflows/submit", json={"run_id": "r1"})
+    rsps.post(f"{EM}/plans/submit", json={"run_id": "r1"})
     wt["submit_etl_workflow"]("plan-1", dry_run=False, confirm=True)
     wt["submit_etl_workflow"]("plan-1", accept_flow_settings=True, dry_run=False, confirm=True)
     assert "accept_flow_settings" not in sent(rsps, 0)
